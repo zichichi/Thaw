@@ -110,21 +110,36 @@ final class MenuBarManager: ObservableObject {
                 .store(in: &c)
         }
 
-        // Handle the `focusedApp` rehide strategy.
+        // Handle the `focusedApp` and `smart` rehide strategies.
         NSWorkspace.shared.publisher(for: \.frontmostApplication)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 if
                     let self,
                     let appState,
-                    case .focusedApp = appState.settings.general.rehideStrategy,
                     let hiddenSection = section(withName: .hidden),
                     let screen = appState.hidEventManager.bestScreen(appState: appState),
                     !appState.hidEventManager.isMouseInsideMenuBar(appState: appState, screen: screen)
                 {
-                    Task {
-                        try await Task.sleep(for: .seconds(0.1))
-                        hiddenSection.hide()
+                    // Handle both focusedApp and smart strategies for focus changes
+                    switch appState.settings.general.rehideStrategy {
+                    case .focusedApp, .smart:
+                        Task {
+                            // Add delay for smart strategy to allow app focus to settle
+                            let delay: TimeInterval = appState.settings.general.rehideStrategy == .smart ? 0.25 : 0.1
+                            try await Task.sleep(for: .seconds(delay))
+
+                            // Check if any menu bar item has a menu open (for smart strategy)
+                            if appState.settings.general.rehideStrategy == .smart {
+                                if await appState.itemManager.isAnyMenuBarItemMenuOpen() {
+                                    return
+                                }
+                            }
+
+                            hiddenSection.hide()
+                        }
+                    default:
+                        break
                     }
                 }
             }
@@ -393,7 +408,9 @@ struct MenuBarAverageColorInfo: Hashable {
     var source: Source
 
     /// The brightness of the menu bar's color.
-    var brightness: CGFloat { color.brightness ?? 0 }
+    var brightness: CGFloat {
+        color.brightness ?? 0
+    }
 
     /// A Boolean value that indicates whether the menu bar has a
     /// bright color.
@@ -401,5 +418,7 @@ struct MenuBarAverageColorInfo: Hashable {
     /// This value is `true` if ``brightness`` is above `0.67`. At
     /// the time of writing, if this value is `true`, the menu bar
     /// draws its items with a darker appearance.
-    var isBright: Bool { brightness > 0.67 }
+    var isBright: Bool {
+        brightness > 0.67
+    }
 }
