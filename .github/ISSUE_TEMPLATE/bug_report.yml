@@ -44,6 +44,16 @@ body:
       placeholder: e.g. 15.3.2
     validations:
       required: true
+  - type: dropdown
+    id: monitor_setup
+    attributes:
+      label: Monitor Setup
+      description: Please select your current display configuration.
+      options:
+        - Single Monitor
+        - Multi-monitor Setup
+    validations:
+      required: true
   - type: textarea
     attributes:
       label: Additional Information
