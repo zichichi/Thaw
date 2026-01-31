@@ -239,7 +239,7 @@ enum RehideStrategy: Int, CaseIterable, Identifiable {
         switch self {
         case .smart: "Smart"
         case .timed: "Timed"
-        case .focusedApp: "Focused app"
+        case .focusedApp: "Focus"
         }
     }
 }
