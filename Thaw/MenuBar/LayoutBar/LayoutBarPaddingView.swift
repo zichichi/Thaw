@@ -13,6 +13,8 @@ import OSLog
 /// A Cocoa view that manages the menu bar layout interface.
 final class LayoutBarPaddingView: NSView {
     private let container: LayoutBarContainer
+    private var isStabilizing = false
+    private var overlayLabel: NSTextField?
 
     /// The layout view's arranged views.
     var arrangedViews: [LayoutBarItemView] {
@@ -31,6 +33,7 @@ final class LayoutBarPaddingView: NSView {
         super.init(frame: .zero)
 
         addSubview(container)
+        configureOverlay()
         self.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
@@ -48,20 +51,24 @@ final class LayoutBarPaddingView: NSView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        container.updateArrangedViewsForDrag(with: sender, phase: .entered)
+        guard !isStabilizing else { return [] }
+        return container.updateArrangedViewsForDrag(with: sender, phase: .entered)
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
+        guard !isStabilizing else { return }
         if let sender {
             container.updateArrangedViewsForDrag(with: sender, phase: .exited)
         }
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        container.updateArrangedViewsForDrag(with: sender, phase: .updated)
+        guard !isStabilizing else { return [] }
+        return container.updateArrangedViewsForDrag(with: sender, phase: .updated)
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
+        guard !isStabilizing else { return }
         container.updateArrangedViewsForDrag(with: sender, phase: .ended)
     }
 
@@ -112,15 +119,73 @@ final class LayoutBarPaddingView: NSView {
             return
         }
         Task {
+            guard !isStabilizing else { return }
+            isStabilizing = true
+            await MainActor.run { self.showOverlay(true) }
             try await Task.sleep(for: .milliseconds(25))
             do {
                 try await appState.itemManager.move(item: item, to: destination)
                 appState.itemManager.removeTemporarilyShownItemFromCache(with: item.tag)
+                await stabilizePlacement(of: item, to: destination, expectedSection: container.section, appState: appState)
             } catch {
                 Logger.default.error("Error moving menu bar item: \(error, privacy: .public)")
                 let alert = NSAlert(error: error)
                 alert.runModal()
             }
+            await MainActor.run {
+                self.isStabilizing = false
+                self.showOverlay(false)
+            }
         }
+    }
+
+    private func configureOverlay() {
+        let label = NSTextField(labelWithString: "Please wait, settling changes…")
+        label.alignment = .center
+        label.textColor = .systemRed
+        label.font = .systemFont(ofSize: 12, weight: .bold)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.isHidden = true
+        addSubview(label)
+        overlayLabel = label
+
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    private func showOverlay(_ visible: Bool) {
+        overlayLabel?.isHidden = !visible
+        container.alphaValue = visible ? 0.6 : 1.0
+    }
+
+    /// Ensures the dragged item remains in the intended section and its icon appears.
+    private func stabilizePlacement(
+        of item: MenuBarItem,
+        to destination: MenuBarItemManager.MoveDestination,
+        expectedSection: MenuBarSection.Name,
+        appState: AppState
+    ) async {
+        // First refresh caches and verify placement.
+        await appState.itemManager.cacheItemsRegardless(skipRecentMoveCheck: true)
+
+        func isInExpectedSection() -> Bool {
+            appState.itemManager.itemCache[expectedSection].contains { $0.tag == item.tag }
+        }
+
+        if !isInExpectedSection() {
+            // Allow macOS a brief moment to settle, then retry once.
+            try? await Task.sleep(for: .milliseconds(120))
+            do {
+                try await appState.itemManager.move(item: item, to: destination)
+                await appState.itemManager.cacheItemsRegardless(skipRecentMoveCheck: true)
+            } catch {
+                Logger.default.error("Stabilize move failed: \(error, privacy: .public)")
+            }
+        }
+
+        // Refresh images so icons show immediately in the UI without clearing to avoid temporary gaps.
+        await appState.imageCache.updateCacheWithoutChecks(sections: MenuBarSection.Name.allCases)
     }
 }

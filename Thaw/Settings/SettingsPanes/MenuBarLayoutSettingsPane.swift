@@ -14,6 +14,9 @@ struct MenuBarLayoutSettingsPane: View {
     @ObservedObject var itemManager: MenuBarItemManager
 
     @State private var loadDeadlineReached = false
+    @State private var isResettingLayout = false
+    @State private var resetStatus: ResetStatus?
+    @State private var isConfirmingReset = false
 
     private let logger = Logger(category: "MenuBarLayoutPane")
 
@@ -30,6 +33,7 @@ struct MenuBarLayoutSettingsPane: View {
             IceForm(spacing: 20) {
                 header
                 layoutBars
+                resetControls
             }
         }
     }
@@ -88,6 +92,53 @@ struct MenuBarLayoutSettingsPane: View {
         }
     }
 
+    private var resetControls: some View {
+        IceSection {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Reset menu bar layout")
+                        .font(.headline)
+                    Text("Resets dividers and moves every movable item except the \(Constants.displayName) icon to hidden — just like a fresh install.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                Button {
+                    isConfirmingReset = true
+                } label: {
+                    if isResettingLayout {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text("Reset Layout")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isResettingLayout)
+            }
+
+            if let resetStatus {
+                Text(resetStatus.message)
+                    .font(.footnote)
+                    .foregroundStyle(resetStatus.isError ? .red : .secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .alert("Reset menu bar layout?", isPresented: $isConfirmingReset) {
+            Button("Reset", role: .destructive) {
+                resetMenuBarLayout()
+            }
+            Button("Cancel", role: .cancel) {
+                isConfirmingReset = false
+            }
+        } message: {
+            Text("Restores divider defaults and moves every movable item except the \(Constants.displayName) icon to Hidden. Use this if the layout looks broken or items won’t load.")
+        }
+    }
+
     private var cannotArrange: some View {
         Text("\(Constants.displayName) cannot arrange menu bar items in automatically hidden menu bars.")
             .font(.title3)
@@ -128,6 +179,54 @@ struct MenuBarLayoutSettingsPane: View {
                     .padding(.leading, 8)
 
                 LayoutBar(imageCache: appState.imageCache, section: name)
+            }
+        }
+    }
+
+    private func resetMenuBarLayout() {
+        isResettingLayout = true
+        resetStatus = nil
+
+        let manager = itemManager
+
+        Task { @MainActor in
+            do {
+                let failedMoves = try await manager.resetLayoutToFreshState()
+                if failedMoves == 0 {
+                    resetStatus = .success
+                } else {
+                    resetStatus = .partialFailure(failedMoves)
+                }
+                isResettingLayout = false
+            } catch {
+                resetStatus = .failure(error.localizedDescription)
+                isResettingLayout = false
+            }
+        }
+    }
+
+    private enum ResetStatus {
+        case success
+        case partialFailure(Int)
+        case failure(String)
+
+        var message: String {
+            switch self {
+            case .success:
+                "Layout reset. Items were moved to the Hidden section."
+            case let .partialFailure(count):
+                "Reset completed with \(count) item(s) that could not be moved. Check the menu bar and try again if needed."
+            case let .failure(message):
+                "Reset failed: \(message)"
+            }
+        }
+
+        var isError: Bool {
+            switch self {
+            case .failure, .partialFailure:
+                true
+            case .success:
+                false
             }
         }
     }

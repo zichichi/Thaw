@@ -1976,6 +1976,118 @@ private enum MenuBarItemEventType {
     }
 }
 
+// MARK: Layout Reset
+
+extension MenuBarItemManager {
+    /// Errors that can occur during a layout reset.
+    enum LayoutResetError: LocalizedError {
+        case missingAppState
+        case missingControlItems
+
+        var errorDescription: String? {
+            switch self {
+            case .missingAppState:
+                "Unable to access app state"
+            case .missingControlItems:
+                "Couldn't find section dividers in the menu bar"
+            }
+        }
+
+        var recoverySuggestion: String? {
+            "Make sure \(Constants.displayName) is running and try again."
+        }
+    }
+
+    /// Resets menu bar layout data to a fresh-install state and moves all
+    /// movable, hideable items (except the Thaw icon) to the
+    /// Hidden section.
+    ///
+    /// - Returns: The number of items that failed to move.
+    func resetLayoutToFreshState() async throws -> Int {
+        logger.info("Resetting menu bar layout to fresh state")
+
+        guard let appState else {
+            throw LayoutResetError.missingAppState
+        }
+
+        // Reset persisted state so macOS treats section dividers like new.
+        ControlItemDefaults[.preferredPosition, ControlItem.Identifier.visible.rawValue] = 0
+        ControlItemDefaults.resetChevronPositions()
+        ControlItemDefaults[.preferredPosition, ControlItem.Identifier.alwaysHidden.rawValue] = nil
+
+        // Forget previously seen/pinned items so we treat everything as new.
+        knownItemIdentifiers.removeAll()
+        pinnedHiddenBundleIDs.removeAll()
+        pinnedAlwaysHiddenBundleIDs.removeAll()
+        persistKnownItemIdentifiers()
+        persistPinnedBundleIDs()
+        temporarilyShownItemContexts.removeAll()
+
+        var items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+
+        guard let controlItems = ControlItemPair(items: &items) else {
+            logger.error("Layout reset aborted: missing hidden section control item")
+            throw LayoutResetError.missingControlItems
+        }
+
+        await enforceControlItemOrder(controlItems: controlItems)
+
+        func movePass(_ items: [MenuBarItem], anchor: MenuBarItem) async -> Int {
+            var failed = 0
+            for item in items {
+                if item.tag == .visibleControlItem {
+                    continue // Keep the Thaw icon in the visible section if enabled.
+                }
+
+                guard item.isMovable, item.canBeHidden, !item.isControlItem else {
+                    continue
+                }
+
+                do {
+                    try await move(item: item, to: .leftOfItem(anchor))
+                } catch {
+                    failed += 1
+                    logger.error("Failed to move \(item.logString, privacy: .public) during layout reset: \(error, privacy: .public)")
+                }
+            }
+            return failed
+        }
+
+        var failedMoves = await movePass(items, anchor: controlItems.hidden)
+
+        // Re-fetch and try once more after the first pass, in case macOS reorders items mid-reset.
+        var refreshedItems = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+        if let refreshedControls = ControlItemPair(items: &refreshedItems) {
+            failedMoves += await movePass(refreshedItems, anchor: refreshedControls.hidden)
+        }
+
+        await cacheActor.clearCachedItemWindowIDs()
+        itemCache = ItemCache(displayID: nil)
+        await cacheItemsRegardless(skipRecentMoveCheck: true)
+
+        await MainActor.run {
+            for section in MenuBarSection.Name.allCases {
+                appState.imageCache.clearImages(for: section)
+            }
+        }
+        await appState.imageCache.updateCacheWithoutChecks(sections: MenuBarSection.Name.allCases)
+
+        // Rebuild layout containers from the refreshed cache to avoid stale arranged views in settings.
+        // Notify UI to refresh layout bars; concrete rebuilding is handled in UI observers.
+        await MainActor.run {
+            appState.objectWillChange.send()
+        }
+
+        return failedMoves
+    }
+
+    /// Wrapper for UI callers; kept separate for clarity in call sites.
+    @MainActor
+    func resetLayoutFromSettingsPane() async throws -> Int {
+        try await resetLayoutToFreshState()
+    }
+}
+
 // MARK: - CGEventField Helpers
 
 private extension CGEventField {

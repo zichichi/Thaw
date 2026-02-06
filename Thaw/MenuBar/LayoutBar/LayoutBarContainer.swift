@@ -83,7 +83,6 @@ final class LayoutBarContainer: NSView {
 
         if let appState {
             appState.itemManager.$itemCache
-                .removeDuplicates()
                 .sink { [weak self] cache in
                     guard let self else {
                         return
@@ -93,7 +92,6 @@ final class LayoutBarContainer: NSView {
                 .store(in: &c)
 
             appState.imageCache.$images
-                .removeDuplicates()
                 .sink { [weak self] _ in
                     guard let self else {
                         return
