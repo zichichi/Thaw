@@ -77,6 +77,9 @@ final class MenuBarItemManager: ObservableObject {
     /// Logger for the menu bar item manager.
     private nonisolated let logger = Logger.menuBarItemManager
 
+    /// Diagnostic logger for the menu bar item manager.
+    private let diagLog = DiagLog(category: "MenuBarItemManager")
+
     /// Semaphore to prevent overlapping event operations.
     private let eventSemaphore = SimpleSemaphore(value: 1)
 
@@ -150,15 +153,20 @@ final class MenuBarItemManager: ObservableObject {
 
     /// Sets up the manager.
     func performSetup(with appState: AppState) async {
+        diagLog.debug("performSetup: starting MenuBarItemManager setup")
         self.appState = appState
         loadKnownItemIdentifiers()
         loadPinnedBundleIDs()
+        diagLog.debug("performSetup: loaded \(self.knownItemIdentifiers.count) known identifiers, \(self.pinnedHiddenBundleIDs.count) pinned hidden, \(self.pinnedAlwaysHiddenBundleIDs.count) pinned always-hidden")
         // On first launch (no known identifiers), avoid auto-relocating the leftmost item
         // so everything remains in the hidden section until the user interacts.
         suppressNextNewLeftmostItemRelocation = knownItemIdentifiers.isEmpty
+        diagLog.debug("performSetup: calling initial cacheItemsRegardless")
         await cacheItemsRegardless()
+        diagLog.debug("performSetup: initial cache complete, items in cache: visible=\(self.itemCache[.visible].count), hidden=\(self.itemCache[.hidden].count), alwaysHidden=\(self.itemCache[.alwaysHidden].count), managedItems=\(self.itemCache.managedItems.count)")
         configureCancellables(with: appState)
         configureCacheTick()
+        diagLog.debug("performSetup: MenuBarItemManager setup complete")
     }
 
     /// Configures the internal observers for the manager.
@@ -417,9 +425,15 @@ extension MenuBarItemManager {
         controlItems: ControlItemPair,
         displayID: CGDirectDisplayID?
     ) async {
+        diagLog.debug("uncheckedCacheItems: processing \(items.count) items for caching")
         var context = CacheContext(controlItems: controlItems, displayID: displayID)
 
+        var validCount = 0
+        var invalidCount = 0
+        var noSectionCount = 0
+
         for item in items where context.isValidForCaching(item) {
+            validCount += 1
             if item.sourcePID == nil {
                 logger.warning("Missing sourcePID for \(item.logString, privacy: .public)")
             }
@@ -437,9 +451,17 @@ extension MenuBarItemManager {
                 continue
             }
 
-            logger.warning("Couldn't find section for caching \(item.logString, privacy: .public)")
+            noSectionCount += 1
+            diagLog.warning("Couldn't find section for caching \(item.logString) bounds=\(NSStringFromRect(item.bounds))")
             context.shouldClearCachedItemWindowIDs = true
         }
+
+        // Count invalid items
+        for item in items where !context.isValidForCaching(item) {
+            invalidCount += 1
+        }
+
+        diagLog.debug("uncheckedCacheItems: \(validCount) valid, \(invalidCount) invalid (filtered), \(noSectionCount) couldn't find section, \(context.temporarilyShownItems.count) temporarily shown")
 
         for (item, destination) in context.temporarilyShownItems {
             context.cache.insert(item, at: destination)
@@ -456,7 +478,7 @@ extension MenuBarItemManager {
         }
 
         itemCache = context.cache
-        logger.debug("Updated menu bar item cache")
+        diagLog.debug("Updated menu bar item cache: visible=\(context.cache[.visible].count), hidden=\(context.cache[.hidden].count), alwaysHidden=\(context.cache[.alwaysHidden].count)")
     }
 
     /// Caches the current menu bar items, regardless of whether the
@@ -469,8 +491,10 @@ extension MenuBarItemManager {
         _ currentItemWindowIDs: [CGWindowID]? = nil,
         skipRecentMoveCheck: Bool = false
     ) async {
+        diagLog.debug("cacheItemsRegardless: entering (skipRecentMoveCheck=\(skipRecentMoveCheck), hasCurrentItemWindowIDs=\(currentItemWindowIDs != nil))")
         await cacheActor.runCacheTask { [weak self] in
             guard let self else {
+                self?.diagLog.warning("cacheItemsRegardless: self is nil, aborting")
                 return
             }
 
@@ -481,7 +505,14 @@ extension MenuBarItemManager {
 
             let previousWindowIDs = await cacheActor.cachedItemWindowIDs
             let displayID = Bridging.getActiveMenuBarDisplayID()
+            diagLog.debug("cacheItemsRegardless: displayID=\(displayID.map { "\($0)" } ?? "nil"), previousWindowIDs count=\(previousWindowIDs.count)")
+
             var items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+            diagLog.debug("cacheItemsRegardless: getMenuBarItems returned \(items.count) items")
+
+            if items.isEmpty {
+                diagLog.warning("cacheItemsRegardless: getMenuBarItems returned ZERO items — this is likely the root cause of 'Loading menu bar items' being stuck")
+            }
 
             let itemWindowIDs = currentItemWindowIDs ?? items.reversed().map { $0.windowID }
             await cacheActor.updateCachedItemWindowIDs(itemWindowIDs)
@@ -493,10 +524,12 @@ extension MenuBarItemManager {
 
             guard let controlItems = ControlItemPair(items: &items) else {
                 // ???: Is clearing the cache the best thing to do here?
-                logger.warning("Missing control item for hidden section, clearing menu bar item cache")
+                logger.warning("Missing control item for hidden section, clearing menu bar item cache. Items found: \(items.count), windowIDs: \(itemWindowIDs.count)")
                 itemCache = ItemCache(displayID: nil)
                 return
             }
+
+            diagLog.debug("cacheItemsRegardless: found control items, hidden windowID=\(controlItems.hidden.windowID), alwaysHidden=\(controlItems.alwaysHidden.map { "\($0.windowID)" } ?? "nil")")
 
             await enforceControlItemOrder(controlItems: controlItems)
 
@@ -514,6 +547,7 @@ extension MenuBarItemManager {
             }
 
             await uncheckedCacheItems(items: items, controlItems: controlItems, displayID: displayID)
+            diagLog.debug("cacheItemsRegardless: finished, cache now has \(self.itemCache.managedItems.count) managed items")
         }
     }
 
@@ -525,7 +559,9 @@ extension MenuBarItemManager {
     /// arranging them into valid positions if needed.
     func cacheItemsIfNeeded() async {
         let itemWindowIDs = Bridging.getMenuBarWindowList(option: [.itemsOnly, .activeSpace])
-        if await cacheActor.cachedItemWindowIDs != itemWindowIDs {
+        let cachedIDs = await cacheActor.cachedItemWindowIDs
+        if cachedIDs != itemWindowIDs {
+            diagLog.debug("cacheItemsIfNeeded: window IDs changed (\(cachedIDs.count) cached vs \(itemWindowIDs.count) current), triggering recache")
             await cacheItemsRegardless(itemWindowIDs)
         }
     }

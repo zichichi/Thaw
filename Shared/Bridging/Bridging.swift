@@ -14,6 +14,7 @@ import OSLog
 /// A namespace for bridged or wrapped APIs.
 enum Bridging {
     private static let logger = Logger(category: "Bridging")
+    private static let diagLog = DiagLog(category: "Bridging")
 }
 
 // MARK: - CGSConnection
@@ -382,15 +383,19 @@ extension Bridging {
 
     private static func getProcessMenuBarWindowList() -> [CGWindowID] {
         guard var count = getWindowCount() else {
+            diagLog.warning("getProcessMenuBarWindowList: getWindowCount() returned nil, cannot enumerate windows")
             return []
         }
+        diagLog.debug("getProcessMenuBarWindowList: total window count = \(count)")
         var list = [CGWindowID](repeating: 0, count: Int(count))
         let result = CGSGetProcessMenuBarWindowList(getMainConnection(), nullConnection, count, &list, &count)
         guard result == .success else {
             logger.error("CGSGetProcessMenuBarWindowList failed with error \(result.logString, privacy: .public)")
             return []
         }
-        return [CGWindowID](list[..<Int(count)])
+        let windowList = [CGWindowID](list[..<Int(count)])
+        diagLog.debug("getProcessMenuBarWindowList: returned \(windowList.count) menu bar windows")
+        return windowList
     }
 
     // MARK: Public Window List API
@@ -449,6 +454,7 @@ extension Bridging {
 
         if option.contains(.onScreen) {
             let onScreenList = Set(getOnScreenWindowList())
+            diagLog.debug("getMenuBarWindowList: onScreen filter active, \(onScreenList.count) on-screen windows")
             predicates.append { windowID in
                 onScreenList.contains(windowID)
             }
@@ -456,6 +462,7 @@ extension Bridging {
 
         if option.contains(.activeSpace) {
             let activeSpaceID = getActiveSpaceID()
+            diagLog.debug("getMenuBarWindowList: activeSpace filter active, spaceID = \(activeSpaceID)")
             predicates.append { windowID in
                 isWindowOnSpace(windowID, activeSpaceID)
             }
@@ -467,11 +474,14 @@ extension Bridging {
             }
         }
 
-        return getProcessMenuBarWindowList().filter { windowID in
+        let rawList = getProcessMenuBarWindowList()
+        let filtered = rawList.filter { windowID in
             predicates.allSatisfy { predicate in
                 predicate(windowID)
             }
         }
+        diagLog.debug("getMenuBarWindowList: \(rawList.count) raw -> \(filtered.count) after filtering (options: onScreen=\(option.contains(.onScreen)), activeSpace=\(option.contains(.activeSpace)), itemsOnly=\(option.contains(.itemsOnly)))")
+        return filtered
     }
 
     // MARK: - CGWindowList Helpers

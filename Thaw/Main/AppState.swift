@@ -71,22 +71,38 @@ final class AppState: ObservableObject {
 
     /// Logger for the app state.
     let logger = Logger(category: "AppState")
+    private let diagLog = DiagLog(category: "AppState")
 
     /// Async setup actions, run once on first access.
     private lazy var setupTask = Task {
+        // Enable diagnostic logging early if the user had it enabled
+        if Defaults.bool(forKey: .enableDiagnosticLogging) {
+            DiagnosticLogger.shared.isEnabled = true
+        }
+
+        diagLog.debug("setupTask: starting AppState setup sequence")
         permissions.stopAllChecks()
+        diagLog.debug("setupTask: permissions state = \(String(describing: self.permissions.permissionsState)), accessibility = \(self.permissions.accessibility.hasPermission), screenRecording = \(self.permissions.screenRecording.hasPermission)")
 
         settings.performSetup(with: self)
         menuBarManager.performSetup(with: self)
+        diagLog.debug("setupTask: settings and menuBarManager setup complete")
 
         if #available(macOS 26.0, *) {
+            diagLog.debug("setupTask: starting MenuBarItemService XPC connection (macOS 26+)")
             await MenuBarItemService.Connection.shared.start()
+            diagLog.debug("setupTask: MenuBarItemService XPC connection started")
+        } else {
+            diagLog.debug("setupTask: skipping MenuBarItemService XPC (pre-macOS 26)")
         }
 
         appearanceManager.performSetup(with: self)
         hidEventManager.performSetup(with: self)
+        diagLog.debug("setupTask: starting itemManager setup")
         await itemManager.performSetup(with: self)
+        diagLog.debug("setupTask: itemManager setup complete, starting imageCache setup")
         imageCache.performSetup(with: self)
+        diagLog.debug("setupTask: imageCache setup complete")
         updatesManager.performSetup(with: self)
         userNotificationManager.performSetup(with: self)
 
@@ -94,6 +110,7 @@ final class AppState: ObservableObject {
 
         // Start memory monitoring
         startMemoryMonitoring()
+        diagLog.debug("setupTask: AppState setup sequence complete")
     }
 
     /// Allows explicit starting of the updater from UI flows.

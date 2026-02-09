@@ -12,23 +12,32 @@ import ScreenCaptureKit
 
 /// A namespace for screen capture operations.
 enum ScreenCapture {
+    private static let diagLog = DiagLog(category: "ScreenCapture")
+
     // MARK: Permissions
 
     /// Returns a Boolean value that indicates whether the app has screen
     /// capture permissions.
     static func checkPermissions() -> Bool {
-        for windowID in Bridging.getMenuBarWindowList(option: [.itemsOnly, .activeSpace]) {
+        let windowIDs = Bridging.getMenuBarWindowList(option: [.itemsOnly, .activeSpace])
+        diagLog.debug("checkPermissions: checking \(windowIDs.count) menu bar windows for title access")
+
+        for windowID in windowIDs {
             guard
                 let window = WindowInfo(windowID: windowID),
                 window.owningApplication != .current // Skip windows we own.
             else {
                 continue
             }
-            return window.title != nil
+            let hasTitle = window.title != nil
+            diagLog.debug("checkPermissions: windowID=\(windowID) ownerPID=\(window.ownerPID) ownerName=\(window.ownerName ?? "nil") title=\(window.title ?? "nil") -> hasTitle=\(hasTitle)")
+            return hasTitle
         }
         // CGPreflightScreenCaptureAccess() only returns an initial value,
         // but we can use it as a fallback.
-        return CGPreflightScreenCaptureAccess()
+        let preflightResult = CGPreflightScreenCaptureAccess()
+        diagLog.debug("checkPermissions: no suitable non-owned windows found, falling back to CGPreflightScreenCaptureAccess() = \(preflightResult)")
+        return preflightResult
     }
 
     /// Returns a Boolean value that indicates whether the app has screen
@@ -45,12 +54,14 @@ enum ScreenCapture {
             return result
         }
         let result = checkPermissions()
+        diagLog.debug("cachedCheckPermissions: computed fresh result = \(result) (reset=\(reset), wasCached=\(Context.cachedResult != nil))")
         Context.cachedResult = result
         return result
     }
 
     /// Requests screen capture permissions.
     static func requestPermissions() {
+        diagLog.debug("requestPermissions: requesting screen capture access")
         if #available(macOS 15.0, *) {
             // CGRequestScreenCaptureAccess() is broken on macOS 15. We can
             // try accessing SCShareableContent to trigger a request if the
@@ -76,12 +87,19 @@ enum ScreenCapture {
     ///   - option: Options that specify which parts of the windows are captured.
     static func captureWindows(with windowIDs: [CGWindowID], screenBounds: CGRect? = nil, option: CGWindowImageOption = []) -> CGImage? {
         guard let array = Bridging.createCGWindowArray(with: windowIDs) else {
+            diagLog.warning("captureWindows: createCGWindowArray returned nil for \(windowIDs.count) window IDs")
             return nil
         }
         let bounds = screenBounds ?? .null
         // ScreenCaptureKit doesn't support capturing images of offscreen menu bar
         // items, so we unfortunately have to use the deprecated CGWindowList API.
-        return CGImage(windowListFromArrayScreenBounds: bounds, windowArray: array as CFArray, imageOption: option)
+        let image = CGImage(windowListFromArrayScreenBounds: bounds, windowArray: array as CFArray, imageOption: option)
+        if let image {
+            diagLog.debug("captureWindows: captured \(windowIDs.count) windows -> \(image.width)x\(image.height) image")
+        } else {
+            diagLog.warning("captureWindows: CGImage(windowListFromArrayScreenBounds:) returned nil for \(windowIDs.count) windows (IDs: \(windowIDs.prefix(5)))")
+        }
+        return image
     }
 
     /// Captures an image of a window.

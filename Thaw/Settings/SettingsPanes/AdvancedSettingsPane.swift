@@ -42,6 +42,9 @@ struct AdvancedSettingsPane: View {
             IceSection("Permissions") {
                 allPermissions
             }
+            IceSection("Diagnostics") {
+                diagnosticLogging
+            }
         }
     }
 
@@ -135,6 +138,40 @@ struct AdvancedSettingsPane: View {
                 }
         }
         .annotation("The amount of time to wait before hiding temporarily shown menu bar items.")
+    }
+
+    private var diagnosticLogging: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(
+                "Enable diagnostic logging",
+                isOn: $settings.enableDiagnosticLogging
+            )
+            .annotation {
+                Text(
+                    """
+                    Writes detailed debug logs to a file for troubleshooting. \
+                    Log files are saved to ~/Library/Logs/Thaw/. \
+                    Disable when not needed to avoid unnecessary disk writes.
+                    """
+                )
+                .padding(.trailing, 75)
+            }
+
+            if settings.enableDiagnosticLogging {
+                HStack(spacing: 12) {
+                    Button("Show Log Files in Finder") {
+                        let url = DiagnosticLogger.shared.logDirectory
+                        NSWorkspace.shared.open(url)
+                    }
+
+                    if let logFile = DiagnosticLogger.shared.currentLogFile {
+                        Text(logFile.lastPathComponent)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     private var allPermissions: some View {

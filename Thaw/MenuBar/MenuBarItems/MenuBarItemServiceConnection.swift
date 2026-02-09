@@ -98,8 +98,10 @@ extension MenuBarItemService {
 
             private func getOrCreateSession() throws -> XPCSession {
                 if let session {
+                    logger.debug("getOrCreateSession: reusing existing XPC session")
                     return session
                 }
+                logger.debug("getOrCreateSession: creating new XPC session for service '\(self.name)'")
                 let session = try XPCSession(xpcService: name, options: .inactive) { [weak self] error in
                     guard let self else {
                         return
@@ -110,6 +112,7 @@ extension MenuBarItemService {
                 session.setPeerRequirement(.isFromSameTeam())
                 session.setTargetQueue(queue)
                 try session.activate()
+                logger.debug("getOrCreateSession: XPC session activated successfully")
                 self.session = session
                 return session
             }
@@ -127,7 +130,7 @@ extension MenuBarItemService {
                     let reply = try session.sendSync(request)
                     return try reply.decode(as: Response.self)
                 } catch {
-                    logger.error("Session failed with error \(error)")
+                    logger.error("XPC session send failed for request \(String(describing: request), privacy: .public): \(error)")
                     return nil
                 }
             }

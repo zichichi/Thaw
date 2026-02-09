@@ -36,7 +36,9 @@ final class Listener {
                 Logger.default.debug("Listener received start request")
                 return .start
             case let .sourcePID(window):
+                Logger.default.debug("Listener: sourcePID request for windowID=\(window.windowID) title=\(window.title ?? "nil", privacy: .public)")
                 let pid = SourcePIDCache.shared.pid(for: window)
+                Logger.default.debug("Listener: sourcePID response for windowID=\(window.windowID) -> pid=\(pid.map { "\($0)" } ?? "nil", privacy: .public)")
                 return .sourcePID(pid)
             }
         } catch {

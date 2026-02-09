@@ -216,6 +216,8 @@ extension MenuBarItem {
     ///     item windows across all available displays.
     ///   - option: Options that filter the returned list. Pass an empty option set
     ///     to return all available menu bar item windows.
+    private static let diagLog = DiagLog(category: "MenuBarItem")
+
     static func getMenuBarItemWindows(on display: CGDirectDisplayID? = nil, option: ListOption) -> [WindowInfo] {
         var bridgingOption: Bridging.MenuBarWindowListOption = .itemsOnly
         var displayBoundsPredicate: (CGWindowID) -> Bool = { _ in true }
@@ -233,16 +235,23 @@ extension MenuBarItem {
             bridgingOption.insert(.activeSpace)
         }
 
-        return Bridging.getMenuBarWindowList(option: bridgingOption)
-            .reversed().compactMap { windowID in
-                guard
-                    displayBoundsPredicate(windowID),
-                    let window = WindowInfo(windowID: windowID)
-                else {
-                    return nil
-                }
-                return window
+        let rawWindowIDs = Bridging.getMenuBarWindowList(option: bridgingOption)
+        diagLog.debug("getMenuBarItemWindows: Bridging returned \(rawWindowIDs.count) window IDs (display=\(display.map { "\($0)" } ?? "nil"))")
+
+        let windows = rawWindowIDs.reversed().compactMap { windowID -> WindowInfo? in
+            guard displayBoundsPredicate(windowID) else {
+                diagLog.debug("getMenuBarItemWindows: windowID \(windowID) filtered by display bounds")
+                return nil
             }
+            guard let window = WindowInfo(windowID: windowID) else {
+                diagLog.warning("getMenuBarItemWindows: WindowInfo init failed for windowID \(windowID)")
+                return nil
+            }
+            return window
+        }
+
+        diagLog.debug("getMenuBarItemWindows: returning \(windows.count) windows from \(rawWindowIDs.count) raw IDs")
+        return windows
     }
 
     /// Creates and returns a list of menu bar items using experimental
@@ -250,12 +259,22 @@ extension MenuBarItem {
     @available(macOS 26.0, *)
     @MainActor
     private static func getMenuBarItemsExperimental(on display: CGDirectDisplayID?, option: ListOption) async -> [MenuBarItem] {
+        let windows = getMenuBarItemWindows(on: display, option: option)
+        diagLog.debug("getMenuBarItemsExperimental: processing \(windows.count) windows for source PID resolution")
+
         var items = [MenuBarItem]()
-        for window in getMenuBarItemWindows(on: display, option: option) {
+        var nilPIDCount = 0
+        for window in windows {
             let sourcePID = await MenuBarItemService.Connection.shared.sourcePID(for: window)
+            if sourcePID == nil {
+                nilPIDCount += 1
+                diagLog.debug("getMenuBarItemsExperimental: nil sourcePID for windowID=\(window.windowID) title=\(window.title ?? "nil") ownerPID=\(window.ownerPID)")
+            }
             let item = MenuBarItem(uncheckedItemWindow: window, sourcePID: sourcePID)
             items.append(item)
         }
+
+        diagLog.debug("getMenuBarItemsExperimental: created \(items.count) items (\(nilPIDCount) with nil sourcePID)")
         return items
     }
 
@@ -277,10 +296,19 @@ extension MenuBarItem {
     ///     to return all available menu bar items.
     @MainActor
     static func getMenuBarItems(on display: CGDirectDisplayID? = nil, option: ListOption) async -> [MenuBarItem] {
+        let isMacOS26 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 ||
+            (ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 15 &&
+                ProcessInfo.processInfo.operatingSystemVersion.minorVersion >= 4)
+        diagLog.debug("getMenuBarItems: starting (macOS 26 path: \(isMacOS26 ? "experimental" : "legacy"))")
+
         if #available(macOS 26.0, *) {
-            await getMenuBarItemsExperimental(on: display, option: option)
+            let items = await getMenuBarItemsExperimental(on: display, option: option)
+            diagLog.debug("getMenuBarItems: experimental path returned \(items.count) items")
+            return items
         } else {
-            getMenuBarItemsLegacyMethod(on: display, option: option)
+            let items = getMenuBarItemsLegacyMethod(on: display, option: option)
+            diagLog.debug("getMenuBarItems: legacy path returned \(items.count) items")
+            return items
         }
     }
 }

@@ -19,6 +19,7 @@ struct MenuBarLayoutSettingsPane: View {
     @State private var isConfirmingReset = false
 
     private let logger = Logger(category: "MenuBarLayoutPane")
+    private let diagLog = DiagLog(category: "MenuBarLayoutPane")
 
     private var hasItems: Bool {
         !itemManager.itemCache.managedItems.isEmpty
@@ -79,15 +80,17 @@ struct MenuBarLayoutSettingsPane: View {
                 return
             }
 
-            logger.debug("Preloading menu bar layout caches")
+            diagLog.debug("Preloading menu bar layout caches (hasItems=\(self.hasItems), screenRecording=\(ScreenCapture.cachedCheckPermissions()))")
             await itemManager.cacheItemsRegardless(skipRecentMoveCheck: true)
+            diagLog.debug("Preload: itemCache after cacheItemsRegardless: managedItems=\(self.itemManager.itemCache.managedItems.count), visible=\(self.itemManager.itemCache[.visible].count), hidden=\(self.itemManager.itemCache[.hidden].count), alwaysHidden=\(self.itemManager.itemCache[.alwaysHidden].count)")
             await appState.imageCache.updateCacheWithoutChecks(sections: MenuBarSection.Name.allCases)
+            diagLog.debug("Preload: imageCache after update: \(self.appState.imageCache.images.count) images")
 
             try? await Task.sleep(for: .seconds(3))
 
             if !hasItems {
                 loadDeadlineReached = true
-                logger.error("Menu bar layout failed to load items after timeout. cacheItems: \(itemManager.itemCache.managedItems.count), images: \(appState.imageCache.images.count)")
+                diagLog.error("Menu bar layout failed to load items after 3s timeout. cacheItems: \(itemManager.itemCache.managedItems.count), images: \(appState.imageCache.images.count), displayID: \(self.itemManager.itemCache.displayID.map { "\($0)" } ?? "nil")")
             }
         }
     }

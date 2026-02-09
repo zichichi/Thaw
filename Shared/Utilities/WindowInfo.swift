@@ -7,6 +7,7 @@
 //  Licensed under the GNU GPLv3
 
 import Cocoa
+import OSLog
 
 /// Information for a window.
 struct WindowInfo {
@@ -99,17 +100,25 @@ struct WindowInfo {
 // MARK: - Window List
 
 extension WindowInfo {
+    private static let diagLog = DiagLog(category: "WindowInfo")
+
     /// Creates a list of windows from the given list of window identifiers.
     ///
     /// - Parameter windowIDs: A list of window identifiers.
     static func createWindows(from windowIDs: [CGWindowID]) -> [WindowInfo] {
-        guard
-            let array = Bridging.createCGWindowArray(with: windowIDs),
-            let list = CGWindowListCreateDescriptionFromArray(array) as? [CFDictionary]
-        else {
+        guard let array = Bridging.createCGWindowArray(with: windowIDs) else {
+            diagLog.warning("createWindows: createCGWindowArray returned nil for \(windowIDs.count) window IDs")
             return []
         }
-        return list.compactMap { WindowInfo(dictionary: $0) }
+        guard let list = CGWindowListCreateDescriptionFromArray(array) as? [CFDictionary] else {
+            diagLog.warning("createWindows: CGWindowListCreateDescriptionFromArray returned nil for \(windowIDs.count) window IDs")
+            return []
+        }
+        let windows = list.compactMap { WindowInfo(dictionary: $0) }
+        if windows.count != windowIDs.count {
+            diagLog.debug("createWindows: \(windowIDs.count) IDs -> \(list.count) descriptions -> \(windows.count) WindowInfo objects (some may have failed init)")
+        }
+        return windows
     }
 
     /// Creates a list of windows using the given options.

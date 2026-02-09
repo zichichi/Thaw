@@ -97,6 +97,7 @@ final class SourcePIDCache {
                 guard let currentBounds = window.currentBounds() else {
                     // Failure here means the window probably doesn't
                     // exist anymore.
+                    Logger.default.debug("stableBounds: currentBounds() returned nil for windowID \(window.windowID) on attempt \(n) — window may no longer exist")
                     return nil
                 }
                 if currentBounds == cachedBounds {
@@ -107,6 +108,7 @@ final class SourcePIDCache {
                 Thread.sleep(forTimeInterval: TimeInterval(n) / 100)
             }
 
+            Logger.default.warning("stableBounds: bounds did not stabilize after 5 attempts for windowID \(window.windowID), last bounds=\(NSStringFromRect(cachedBounds))")
             return nil
         }
 
@@ -129,20 +131,32 @@ final class SourcePIDCache {
 
         /// Updates the cached process identifier for the given window.
         mutating func updatePID(for window: WindowInfo) {
-            guard
-                AXHelpers.isProcessTrusted(),
-                let windowBounds = stableBounds(for: window)
-            else {
+            let isTrusted = AXHelpers.isProcessTrusted()
+            guard isTrusted else {
+                Logger.default.warning("updatePID: AXHelpers.isProcessTrusted() returned false — accessibility permission missing in XPC service")
+                return
+            }
+
+            guard let windowBounds = stableBounds(for: window) else {
+                Logger.default.debug("updatePID: stableBounds returned nil for windowID \(window.windowID)")
                 return
             }
 
             partitionApps()
 
+            var appsChecked = 0
+            var appsWithBar = 0
+            var totalChildrenChecked = 0
+
             for app in apps {
+                appsChecked += 1
                 guard let bar = app.getOrCreateExtrasMenuBar() else {
                     continue
                 }
-                for child in AXHelpers.children(for: bar) {
+                appsWithBar += 1
+                let children = AXHelpers.children(for: bar)
+                for child in children {
+                    totalChildrenChecked += 1
                     guard AXHelpers.isEnabled(child) else {
                         continue
                     }
@@ -153,9 +167,12 @@ final class SourcePIDCache {
                         continue
                     }
                     pids[window.windowID] = app.processIdentifier
+                    Logger.default.debug("updatePID: matched windowID \(window.windowID) to PID \(app.processIdentifier) (checked \(appsChecked) apps, \(appsWithBar) with extras bar, \(totalChildrenChecked) children)")
                     return
                 }
             }
+
+            Logger.default.debug("updatePID: no match found for windowID \(window.windowID) bounds=\(NSStringFromRect(windowBounds)) (checked \(appsChecked) apps, \(appsWithBar) with extras bar, \(totalChildrenChecked) children)")
         }
     }
 
@@ -250,10 +267,16 @@ final class SourcePIDCache {
     func pid(for window: WindowInfo) -> pid_t? {
         state.withLock { state in
             if let pid = state.pids[window.windowID] {
+                Logger.default.debug("SourcePIDCache.pid: cache hit for windowID \(window.windowID) -> PID \(pid)")
                 return pid
             }
+            Logger.default.debug("SourcePIDCache.pid: cache miss for windowID \(window.windowID) title=\(window.title ?? "nil", privacy: .public), resolving via AX API")
             state.updatePID(for: window)
-            return state.pids[window.windowID]
+            let result = state.pids[window.windowID]
+            if result == nil {
+                Logger.default.warning("SourcePIDCache.pid: failed to resolve PID for windowID \(window.windowID) title=\(window.title ?? "nil", privacy: .public) ownerPID=\(window.ownerPID)")
+            }
+            return result
         }
     }
 }

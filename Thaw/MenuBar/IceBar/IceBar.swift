@@ -335,6 +335,8 @@ private struct IceBarContentView: View {
         }
     }
 
+    private static let diagLog = DiagLog(category: "IceBar.Content")
+
     @ViewBuilder
     private var content: some View {
         if !ScreenCapture.cachedCheckPermissions() {
@@ -353,11 +355,17 @@ private struct IceBarContentView: View {
                 .foregroundStyle(.link)
             }
             .padding(.horizontal, 10)
+            .onAppear {
+                Self.diagLog.warning("IceBar content: showing 'requires screen recording permissions' — cachedCheckPermissions() returned false")
+            }
         } else if (section == .alwaysHidden || section == .hidden) && items.isEmpty {
             HStack {
                 Text("No items in this section")
             }
             .padding(.horizontal, 10)
+            .onAppear {
+                Self.diagLog.debug("IceBar content: showing 'No items in this section' for section \(self.section.logString)")
+            }
         } else if itemManager.itemCache.managedItems.isEmpty {
             HStack {
                 Text("Loading menu bar items…")
@@ -365,6 +373,9 @@ private struct IceBarContentView: View {
                     .controlSize(.small)
             }
             .padding(.horizontal, 10)
+            .onAppear {
+                Self.diagLog.warning("IceBar content: showing 'Loading menu bar items…' — itemCache.managedItems is EMPTY. This means the item cache has never been populated.")
+            }
         } else if imageCache.cacheFailed(for: section) {
             HStack {
                 Text(cacheGracePeriodActive ? "Loading menu bar items…" : "Unable to display menu bar items")
@@ -374,6 +385,9 @@ private struct IceBarContentView: View {
                 }
             }
             .padding(.horizontal, 10)
+            .onAppear {
+                Self.diagLog.warning("IceBar content: showing '\(self.cacheGracePeriodActive ? "Loading…" : "Unable to display")' for section \(self.section.logString) — imageCache.cacheFailed=true (grace period active: \(self.cacheGracePeriodActive), cached images count: \(self.imageCache.images.count), items in section: \(self.itemManager.itemCache[self.section].count))")
+            }
         } else {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
