@@ -24,6 +24,10 @@ final class HIDEventManager: ObservableObject {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// Timer that periodically checks whether the event tap is still
+    /// valid and attempts to recreate it if the Mach port was invalidated.
+    private var healthCheckTimer: Timer?
+
     /// The number of times the manager has been told to stop.
     private var disableCount = 0
 
@@ -176,6 +180,33 @@ final class HIDEventManager: ObservableObject {
         }
 
         cancellables = c
+
+        // Periodically check that the mouseMovedTap is still alive.
+        // macOS can invalidate the Mach port under resource pressure or
+        // when accessibility permissions change. If it becomes invalid,
+        // ensureValid() will recreate it.
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.performHealthCheck()
+            }
+        }
+    }
+
+    /// Checks the health of the event tap and attempts recovery if needed.
+    private func performHealthCheck() {
+        guard isEnabled else { return }
+
+        // Check the mouseMovedTap if show-on-hover is active.
+        if let appState, appState.settings.general.showOnHover {
+            if mouseMovedTap.ensureValid() {
+                // Tap is valid. Make sure it's enabled.
+                if !mouseMovedTap.isEnabled {
+                    mouseMovedTap.start()
+                }
+            }
+        }
     }
 
     // MARK: Start/Stop

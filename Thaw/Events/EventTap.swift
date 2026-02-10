@@ -82,6 +82,8 @@ final class EventTap {
         let unretained: EventTap = Unmanaged.fromOpaque(refcon).takeUnretainedValue()
         return withExtendedLifetime(unretained) { tap in
             if type == .tapDisabledByUserInput || type == .tapDisabledByTimeout {
+                let reason = type == .tapDisabledByTimeout ? "timeout" : "user input"
+                logger.warning("Event tap \"\(tap.label)\" was disabled by \(reason), re-enabling")
                 tap.enable()
                 return nil
             }
@@ -98,6 +100,12 @@ final class EventTap {
     private var source: CFRunLoopSource?
     private let runLoop: CFRunLoop
     private let callback: (EventTap, CGEvent) -> CGEvent?
+
+    /// Stored creation parameters for tap recreation.
+    private let creationTypes: [CGEventType]
+    private let creationLocation: Location
+    private let creationPlacement: CGEventTapPlacement
+    private let creationOption: CGEventTapOptions
 
     /// A string label that identifies the tap.
     let label: String
@@ -151,6 +159,10 @@ final class EventTap {
         self.label = label
         self.callback = callback
         self.runLoop = CFRunLoopGetMain()
+        self.creationTypes = types
+        self.creationLocation = location
+        self.creationPlacement = placement
+        self.creationOption = option
 
         // Check if we can create a new tap to prevent Mach port leaks
         guard Self.requestTapCreation() else {
@@ -227,6 +239,74 @@ final class EventTap {
 
     deinit {
         invalidate()
+    }
+
+    /// Checks whether the tap is still valid and attempts to recreate
+    /// it if the Mach port has been invalidated. Returns `true` if the
+    /// tap is valid after this call (either already valid or successfully
+    /// recreated).
+    @discardableResult
+    func ensureValid() -> Bool {
+        if isValid {
+            return true
+        }
+        let tapLabel = self.label
+        if machPort == nil && !isInvalidated {
+            // Tap was never successfully created.
+            Self.logger.warning("Event tap \"\(tapLabel)\" has no Mach port, attempting creation")
+            return recreate()
+        }
+        if isInvalidated {
+            Self.logger.warning("Event tap \"\(tapLabel)\" was invalidated, cannot recreate")
+            return false
+        }
+        Self.logger.warning("Event tap \"\(tapLabel)\" Mach port is invalid, attempting recreation")
+        return recreate()
+    }
+
+    /// Tears down the current tap and creates a new one using the
+    /// original parameters. Returns `true` on success.
+    private func recreate() -> Bool {
+        let tapLabel = self.label
+        // Clean up the old tap without setting isInvalidated (we want to reuse this instance).
+        Self.unregisterTap(self)
+        if let source {
+            CFRunLoopRemoveSource(runLoop, source, .commonModes)
+            self.source = nil
+        }
+        if let machPort {
+            CGEvent.tapEnable(tap: machPort, enable: false)
+            CFMachPortInvalidate(machPort)
+            self.machPort = nil
+            Unmanaged.passUnretained(self).release()
+        }
+
+        guard Self.requestTapCreation() else {
+            Self.logger.warning("Too many active EventTaps, cannot recreate \"\(tapLabel)\"")
+            return false
+        }
+
+        let retained = Unmanaged.passRetained(self)
+        guard
+            let newMachPort = EventTap.createMachPort(
+                mask: creationTypes.reduce(0) { $0 | (1 << $1.rawValue) },
+                location: creationLocation,
+                place: creationPlacement,
+                options: creationOption,
+                userInfo: retained.toOpaque()
+            ),
+            let newSource = CFMachPortCreateRunLoopSource(nil, newMachPort, 0)
+        else {
+            retained.release()
+            Self.logger.error("Failed to recreate event tap \"\(tapLabel)\"")
+            return false
+        }
+
+        Self.registerTap(self)
+        self.machPort = newMachPort
+        self.source = newSource
+        Self.logger.info("Successfully recreated event tap \"\(tapLabel)\"")
+        return true
     }
 
     /// Invalidates the event tap and releases its resources.

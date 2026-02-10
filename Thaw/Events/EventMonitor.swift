@@ -9,8 +9,10 @@
 import Cocoa
 import Combine
 import os.lock
+import OSLog
 
 struct EventMonitor: Sendable {
+    private static let logger = Logger(subsystem: "com.stonerl.Thaw", category: "EventMonitor")
     private final class LocalMonitorState: @unchecked Sendable {
         private let mask: NSEvent.EventTypeMask
         private let handler: (NSEvent) -> NSEvent?
@@ -127,6 +129,7 @@ struct EventMonitor: Sendable {
             }
 
             guard let local else {
+                EventMonitor.logger.error("Failed to create local event monitor for mask \(self.mask.rawValue)")
                 return
             }
 
@@ -138,6 +141,7 @@ struct EventMonitor: Sendable {
             }
 
             guard let global else {
+                EventMonitor.logger.error("Failed to create global event monitor for mask \(self.mask.rawValue)")
                 NSEvent.removeMonitor(local)
                 return
             }
