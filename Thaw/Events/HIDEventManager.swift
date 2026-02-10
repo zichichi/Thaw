@@ -8,6 +8,7 @@
 
 import Cocoa
 import Combine
+import OSLog
 
 /// Manager that monitors input events and implements the features
 /// that are triggered by them, such as showing hidden items on
@@ -30,6 +31,10 @@ final class HIDEventManager: ObservableObject {
 
     /// The number of times the manager has been told to stop.
     private var disableCount = 0
+
+    /// Timestamp of the last `stopAll()` call, used by the health check
+    /// to detect a stuck disabled state.
+    private var lastStopTimestamp: ContinuousClock.Instant?
 
     /// A Boolean value that indicates whether the manager is enabled.
     private var isEnabled = false {
@@ -194,8 +199,31 @@ final class HIDEventManager: ObservableObject {
         }
     }
 
-    /// Checks the health of the event tap and attempts recovery if needed.
+    private static let logger = Logger(subsystem: "com.stonerl.Thaw", category: "HIDEventManager")
+
+    /// Checks the health of event monitors and taps, and attempts
+    /// recovery if needed.
     private func performHealthCheck() {
+        // Detect a stuck disabled state. If disableCount > 0 and we've
+        // been disabled for longer than any legitimate operation would
+        // take (e.g. a move or click), the count is likely imbalanced
+        // due to a cancelled Task or unexpected error. Force recovery.
+        if !isEnabled, disableCount > 0, let lastStop = lastStopTimestamp {
+            let elapsed = ContinuousClock.now - lastStop
+            if elapsed > .seconds(10) {
+                Self.logger.error(
+                    """
+                    Event manager stuck in disabled state for \
+                    \(elapsed, privacy: .public) with disableCount=\
+                    \(self.disableCount, privacy: .public), forcing recovery
+                    """
+                )
+                disableCount = 0
+                isEnabled = true
+                lastStopTimestamp = nil
+            }
+        }
+
         guard isEnabled else { return }
 
         // Check the mouseMovedTap if show-on-hover is active.
@@ -203,6 +231,7 @@ final class HIDEventManager: ObservableObject {
             if mouseMovedTap.ensureValid() {
                 // Tap is valid. Make sure it's enabled.
                 if !mouseMovedTap.isEnabled {
+                    Self.logger.warning("mouseMovedTap was valid but not enabled, re-enabling")
                     mouseMovedTap.start()
                 }
             }
@@ -218,6 +247,7 @@ final class HIDEventManager: ObservableObject {
         }
         if disableCount == 0 {
             isEnabled = true
+            lastStopTimestamp = nil
         }
     }
 
@@ -227,6 +257,7 @@ final class HIDEventManager: ObservableObject {
             isEnabled = false
         }
         disableCount += 1
+        lastStopTimestamp = .now
     }
 }
 
