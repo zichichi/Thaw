@@ -42,7 +42,9 @@ final class IceBarPanel: NSPanel {
         self.backgroundColor = .clear
         self.hasShadow = false
         self.level = .mainMenu + 1
-        self.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle, .moveToActiveSpace]
+        self.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle, .moveToActiveSpace, .stationary]
+        self.hidesOnDeactivate = false
+        self.canHide = false
     }
 
     /// Sets up the panel.
