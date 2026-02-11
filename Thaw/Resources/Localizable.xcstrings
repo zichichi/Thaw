@@ -1660,7 +1660,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "點按以顯示隱藏項目，或雙擊顯示永久隱藏項目。右鍵點按開啟 %@ 的設定。"
+            "value" : "點按以顯示隱藏項目，或按兩下顯示永久隱藏項目。右鍵點按開啟 %@ 的設定。"
           }
         }
       }
@@ -3798,7 +3798,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "選單列覆蓋層"
+            "value" : "選單列覆疊"
           }
         }
       }
@@ -4446,7 +4446,7 @@
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "錄製快速鍵"
+            "value" : "記錄快速鍵"
           }
         }
       }
