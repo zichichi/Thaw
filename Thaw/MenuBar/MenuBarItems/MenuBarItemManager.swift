@@ -1675,14 +1675,32 @@ extension MenuBarItemManager {
         /// nonstandard popup windows that ``shownInterfaceWindow`` may miss.
         let sourcePID: pid_t
 
-        /// The destination to return the item to.
+        /// The destination to return the item to (captured at show-time).
+        /// This is the preferred destination, but may become stale if the
+        /// target item has moved or disappeared by the time we rehide.
         let returnDestination: MoveDestination
+
+        /// The tag of the neighbor on the opposite side of
+        /// ``returnDestination``, used as a secondary fallback to preserve
+        /// relative ordering when the primary target is gone.
+        let fallbackNeighborTag: MenuBarItemTag?
+
+        /// The original section the item belonged to before being temporarily
+        /// shown. Used as a last-resort fallback when both neighbor-based
+        /// destinations are stale.
+        let originalSection: MenuBarSection.Name
 
         /// The window of the item's shown interface.
         var shownInterfaceWindow: WindowInfo?
 
         /// The number of attempts that have been made to rehide the item.
         var rehideAttempts = 0
+
+        /// The number of times the item was not found on the active space.
+        /// Tracked separately from ``rehideAttempts`` to allow more retries
+        /// for the "item not found" case (the app may be on another space
+        /// or temporarily invisible).
+        var notFoundAttempts = 0
 
         /// Timestamp for when the item was first shown so we can honor
         /// a short grace period for menus that use nonstandard windows.
@@ -1746,24 +1764,40 @@ extension MenuBarItemManager {
             }
         }
 
-        init(tag: MenuBarItemTag, sourcePID: pid_t, returnDestination: MoveDestination) {
+        init(
+            tag: MenuBarItemTag,
+            sourcePID: pid_t,
+            returnDestination: MoveDestination,
+            fallbackNeighborTag: MenuBarItemTag?,
+            originalSection: MenuBarSection.Name
+        ) {
             self.tag = tag
             self.sourcePID = sourcePID
             self.returnDestination = returnDestination
+            self.fallbackNeighborTag = fallbackNeighborTag
+            self.originalSection = originalSection
         }
     }
 
     /// Gets the destination to return the given item to after it is
-    /// temporarily shown.
-    private func getReturnDestination(for item: MenuBarItem, in items: [MenuBarItem]) -> MoveDestination? {
+    /// temporarily shown, along with the tag of the neighbor on the
+    /// opposite side (if any) for fallback ordering.
+    private func getReturnDestination(
+        for item: MenuBarItem,
+        in items: [MenuBarItem]
+    ) -> (destination: MoveDestination, fallbackNeighborTag: MenuBarItemTag?)? {
         guard let index = items.firstIndex(matching: item.tag) else {
             return nil
         }
+        // Prefer anchoring to the item on the right (lower index = further
+        // right in macOS menu bar coordinates). The fallback is the item on
+        // the opposite side.
         if items.indices.contains(index + 1) {
-            return .leftOfItem(items[index + 1])
+            let fallback = items.indices.contains(index - 1) ? items[index - 1].tag : nil
+            return (.leftOfItem(items[index + 1]), fallback)
         }
         if items.indices.contains(index - 1) {
-            return .rightOfItem(items[index - 1])
+            return (.rightOfItem(items[index - 1]), nil)
         }
         return nil
     }
@@ -1837,6 +1871,12 @@ extension MenuBarItemManager {
             return
         }
 
+        // Determine the item's original section early so we can persist it
+        // and use it as a fallback if the neighbor-based return destination
+        // becomes stale by the time we rehide.
+        let originalSection = itemCache.address(for: item.tag)?.section ?? .hidden
+        let tagIdentifier = "\(item.tag.namespace):\(item.tag.title)"
+
         // Rehide any previously temporarily shown items before showing a new one.
         // This prevents stale contexts from accumulating when the user opens multiple
         // temporary items in quick succession, which would leave earlier items stranded
@@ -1845,21 +1885,35 @@ extension MenuBarItemManager {
             rehideTimer?.invalidate()
             rehideCancellable?.cancel()
             await rehideTemporarilyShownItems(force: true)
+
+            // If force-rehide still left stale contexts (e.g. items that couldn't
+            // be found on the active space), ensure their pendingRelocations entries
+            // survive but clear the in-memory contexts so they don't block us. The
+            // relocatePendingItems path will catch them on the next cache cycle.
+            if !temporarilyShownItemContexts.isEmpty {
+                logger.warning(
+                    """
+                    Force-rehide left \(self.temporarilyShownItemContexts.count, privacy: .public) \
+                    stale context(s); clearing in-memory contexts (pendingRelocations will handle recovery)
+                    """
+                )
+                temporarilyShownItemContexts.removeAll()
+            }
         }
 
         let items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
 
-        guard let destination = getReturnDestination(for: item, in: items) else {
+        guard let returnInfo = getReturnDestination(for: item, in: items) else {
             logger.error("No return destination for \(item.logString, privacy: .public)")
             return
         }
 
         // Prefer inserting to the left of the Thaw/visible control item so the icon appears
-        // where users expect. If it’s missing, fall back to the first non-control item.
+        // where users expect. If it's missing, fall back to the first non-control item.
         let visibleControl = items.first(matching: .visibleControlItem)
         let targetItem = visibleControl ?? items.first(where: { !$0.isControlItem && $0.canBeHidden }) ?? items.first
 
-        // If we couldn’t find any anchor, bail gracefully.
+        // If we couldn't find any anchor, bail gracefully.
         guard let anchor = targetItem else {
             logger.warning("Not enough room or no anchor to show \(item.logString, privacy: .public)")
             let alert = NSAlert()
@@ -1874,11 +1928,8 @@ extension MenuBarItemManager {
         // quits before we get a chance to rehide it (macOS persists the
         // physical position set by the Cmd+drag, so on relaunch the icon
         // would otherwise stay in the visible section).
-        let tagIdentifier = "\(item.tag.namespace):\(item.tag.title)"
-        if let originalSection = itemCache.address(for: item.tag)?.section {
-            pendingRelocations[tagIdentifier] = sectionKey(for: originalSection)
-            persistPendingRelocations()
-        }
+        pendingRelocations[tagIdentifier] = sectionKey(for: originalSection)
+        persistPendingRelocations()
 
         appState.hidEventManager.stopAll()
         defer {
@@ -1899,7 +1950,9 @@ extension MenuBarItemManager {
         let context = TemporarilyShownItemContext(
             tag: item.tag,
             sourcePID: item.sourcePID ?? item.ownerPID,
-            returnDestination: destination
+            returnDestination: returnInfo.destination,
+            fallbackNeighborTag: returnInfo.fallbackNeighborTag,
+            originalSection: originalSection
         )
         temporarilyShownItemContexts.append(context)
 
@@ -1941,6 +1994,83 @@ extension MenuBarItemManager {
         context.shownInterfaceWindow = windowsAfterClick.first { window in
             window.ownerPID == clickPID && !idsBeforeClick.contains(window.windowID)
         }
+    }
+
+    /// Resolves the best move destination for returning a temporarily shown
+    /// item to its original section.
+    ///
+    /// Tries destinations in order of preference:
+    /// 1. The captured ``TemporarilyShownItemContext/returnDestination``
+    ///    (primary neighbor, refreshed with current bounds).
+    /// 2. The ``TemporarilyShownItemContext/fallbackNeighborTag`` (the
+    ///    neighbor on the opposite side, to preserve relative ordering).
+    /// 3. The control item for the item's original section (guarantees
+    ///    the item ends up in the correct section, though ordering within
+    ///    the section may differ).
+    private func resolveReturnDestination(
+        for context: TemporarilyShownItemContext,
+        in items: [MenuBarItem]
+    ) -> MoveDestination? {
+        // 1. Try the primary neighbor-based destination.
+        //    Re-wrap with the fresh item so the move uses current bounds.
+        let targetTag = context.returnDestination.targetItem.tag
+        if let freshTarget = items.first(matching: targetTag) {
+            switch context.returnDestination {
+            case .leftOfItem:
+                return .leftOfItem(freshTarget)
+            case .rightOfItem:
+                return .rightOfItem(freshTarget)
+            }
+        }
+
+        // 2. Try the fallback neighbor (opposite side). The primary
+        //    destination was .leftOfItem (right neighbor), so the fallback
+        //    is the left neighbor — use .rightOfItem to place after it.
+        //    If the primary was .rightOfItem (left neighbor), we have no
+        //    fallback (it was already the last resort from getReturnDestination).
+        if let fallbackTag = context.fallbackNeighborTag,
+           let freshFallback = items.first(matching: fallbackTag)
+        {
+            switch context.returnDestination {
+            case .leftOfItem:
+                // Primary was "left of right-neighbor", so fallback neighbor
+                // was on the left — place to the right of it.
+                return .rightOfItem(freshFallback)
+            case .rightOfItem:
+                // Primary was "right of left-neighbor", fallback was on the
+                // right — place to the left of it.
+                return .leftOfItem(freshFallback)
+            }
+        }
+
+        // 3. Fallback: use the control item for the original section.
+        logger.debug(
+            """
+            Return destination neighbors not found for \(context.tag, privacy: .public); \
+            falling back to section-level destination for \(context.originalSection.logString, privacy: .public)
+            """
+        )
+        switch context.originalSection {
+        case .hidden:
+            if let controlItem = items.first(matching: .hiddenControlItem) {
+                return .leftOfItem(controlItem)
+            }
+        case .alwaysHidden:
+            if let controlItem = items.first(matching: .alwaysHiddenControlItem) {
+                return .leftOfItem(controlItem)
+            }
+            // If the always-hidden section was disabled, fall back to hidden.
+            if let controlItem = items.first(matching: .hiddenControlItem) {
+                return .leftOfItem(controlItem)
+            }
+        case .visible:
+            // Should not happen (we don't temporarily show items that are
+            // already visible), but handle it gracefully.
+            return nil
+        }
+
+        logger.error("No control items found to resolve return destination for \(context.tag, privacy: .public)")
+        return nil
     }
 
     /// Rehides all temporarily shown items.
@@ -1994,22 +2124,46 @@ extension MenuBarItemManager {
 
         while let context = currentContexts.popLast() {
             guard let item = items.first(matching: context.tag) else {
-                context.rehideAttempts += 1
+                context.notFoundAttempts += 1
                 logger.debug(
                     """
                     Missing temporarily shown item \(context.tag, privacy: .public) on active space \
-                    (attempt \(context.rehideAttempts, privacy: .public)); will retry
+                    (not-found attempt \(context.notFoundAttempts, privacy: .public)); will retry
                     """
                 )
-                if context.rehideAttempts < 3 {
+                // Keep the context for retry — the item may be on another
+                // space or the app may have briefly hidden it. After enough
+                // attempts, drop the in-memory context and rely on the
+                // persisted pendingRelocations entry to recover on the next
+                // cache cycle (relocatePendingItems).
+                if context.notFoundAttempts < 10 {
                     failedContexts.append(context)
                 } else {
-                    context.rehideAttempts = 0
+                    logger.warning(
+                        """
+                        Giving up in-memory retry for \(context.tag, privacy: .public) after \
+                        \(context.notFoundAttempts, privacy: .public) not-found attempts; \
+                        pendingRelocations will handle recovery
+                        """
+                    )
                 }
                 continue
             }
+
+            // Resolve the best return destination using fresh items.
+            guard let destination = resolveReturnDestination(for: context, in: items) else {
+                logger.error(
+                    """
+                    Could not resolve return destination for \(item.logString, privacy: .public); \
+                    item will remain in visible section until next cache cycle handles pendingRelocations
+                    """
+                )
+                // Don't remove pendingRelocations — let relocatePendingItems handle it.
+                continue
+            }
+
             do {
-                try await move(item: item, to: context.returnDestination)
+                try await move(item: item, to: destination)
                 // Successfully rehidden — remove the pending relocation entry.
                 let tagIdentifier = "\(context.tag.namespace):\(context.tag.title)"
                 pendingRelocations.removeValue(forKey: tagIdentifier)
@@ -2023,10 +2177,10 @@ extension MenuBarItemManager {
                     """
                 )
                 if context.rehideAttempts < 3 {
-                    currentContexts.append(context) // Try again.
+                    currentContexts.append(context) // Try again immediately.
                 } else {
-                    // Failed contexts are ultimately added back to the array
-                    // and rehidden after a longer delay, so reset the count.
+                    // Move failed 3 times with the item present. Reset and
+                    // schedule a longer-delay retry.
                     context.rehideAttempts = 0
                     failedContexts.append(context)
                 }
