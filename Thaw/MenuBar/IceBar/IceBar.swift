@@ -143,6 +143,9 @@ final class IceBarPanel: NSPanel {
             return
         }
 
+        // Rehide any temporarily shown items as soon as the IceBar opens.
+        await appState.itemManager.rehideTemporarilyShownItems(force: true)
+
         // IMPORTANT: We must set the navigation state and current section
         // before updating the caches.
         appState.navigationState.isIceBarPresented = true
