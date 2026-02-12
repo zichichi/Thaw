@@ -2362,7 +2362,11 @@ extension MenuBarItemManager {
         if let systemItem = leftmostItems.first(where: { !$0.canBeHidden }) {
             diagLog.info("Relocating non-hideable system item \(systemItem.logString) to visible section")
             do {
-                try await move(item: systemItem, to: .rightOfItem(controlItems.hidden))
+                try await move(
+                    item: systemItem,
+                    to: .rightOfItem(controlItems.hidden),
+                    skipInputPause: true
+                )
             } catch {
                 diagLog.error("Failed to relocate system item \(systemItem.logString): \(error)")
                 return false
@@ -2392,7 +2396,11 @@ extension MenuBarItemManager {
 
         // Move only the offending item to the right of the hidden control item (i.e., into visible section).
         do {
-            try await move(item: candidate, to: .rightOfItem(controlItems.hidden))
+            try await move(
+                item: candidate,
+                to: .rightOfItem(controlItems.hidden),
+                skipInputPause: true
+            )
         } catch {
             logger.error("Failed to relocate \(candidate.logString, privacy: .public): \(error, privacy: .public)")
             return false
@@ -2480,7 +2488,7 @@ extension MenuBarItemManager {
             )
 
             do {
-                try await move(item: item, to: destination)
+                try await move(item: item, to: destination, skipInputPause: true)
                 pendingRelocations.removeValue(forKey: tagIdentifier)
                 didRelocate = true
             } catch {
@@ -2517,7 +2525,7 @@ extension MenuBarItemManager {
 
         do {
             logger.debug("Control items have incorrect order")
-            try await move(item: alwaysHidden, to: .leftOfItem(hidden))
+            try await move(item: alwaysHidden, to: .leftOfItem(hidden), skipInputPause: true)
         } catch {
             logger.error("Error enforcing control item order: \(error, privacy: .public)")
         }

@@ -152,6 +152,7 @@ final class LayoutBarPaddingView: NSView {
                 try await appState.itemManager.move(
                     item: item,
                     to: destination,
+                    skipInputPause: true,
                     watchdogTimeout: MenuBarItemManager.layoutWatchdogTimeout
                 )
                 appState.itemManager.removeTemporarilyShownItemFromCache(with: item.tag)
@@ -194,6 +195,7 @@ final class LayoutBarPaddingView: NSView {
                 try await appState.itemManager.move(
                     item: item,
                     to: destination,
+                    skipInputPause: true,
                     watchdogTimeout: MenuBarItemManager.layoutWatchdogTimeout
                 )
                 await appState.itemManager.cacheItemsRegardless(skipRecentMoveCheck: true)
