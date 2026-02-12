@@ -210,8 +210,11 @@ final class MenuBarItemManager: ObservableObject {
         }
     }
 
-    /// The shared app state.
     private(set) weak var appState: AppState?
+
+    /// A Boolean value that indicates whether a temporary show or rehide
+    /// operation is currently in progress.
+    private var isProcessingTemporaryItem = false
 
     /// Sets up the manager.
     func performSetup(with appState: AppState) async {
@@ -1985,6 +1988,17 @@ extension MenuBarItemManager {
             return
         }
 
+        while isProcessingTemporaryItem {
+            MenuBarItemManager.diagLog.debug("temporarilyShow: waiting for another operation to finish")
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        isProcessingTemporaryItem = true
+        MenuBarItemManager.diagLog.debug("temporarilyShow: started for \(item.logString)")
+        defer {
+            MenuBarItemManager.diagLog.debug("temporarilyShow: finished for \(item.logString)")
+            isProcessingTemporaryItem = false
+        }
+
         // Determine the displayID for this item.
         let resolvedDisplayID: CGDirectDisplayID
         if let displayID {
@@ -2007,7 +2021,7 @@ extension MenuBarItemManager {
         if !temporarilyShownItemContexts.isEmpty {
             rehideTimer?.invalidate()
             rehideCancellable?.cancel()
-            await rehideTemporarilyShownItems(force: true)
+            await rehideTemporarilyShownItems(force: true, isCalledFromTemporarilyShow: true)
 
             // If some items failed to rehide (e.g. move timed out), don't remove
             // them from the contexts list. They will be retried by the rehide timer
@@ -2199,7 +2213,7 @@ extension MenuBarItemManager {
     ///
     /// - Parameter force: If `true`, skip the interface-showing and
     ///   user-input guards and rehide all items immediately.
-    func rehideTemporarilyShownItems(force: Bool = false) async {
+    func rehideTemporarilyShownItems(force: Bool = false, isCalledFromTemporarilyShow: Bool = false) async {
         guard let appState else {
             MenuBarItemManager.diagLog.error("Missing AppState, so not rehiding")
             return
@@ -2207,6 +2221,22 @@ extension MenuBarItemManager {
         guard !temporarilyShownItemContexts.isEmpty else {
             return
         }
+
+        if !isCalledFromTemporarilyShow {
+            while isProcessingTemporaryItem {
+                MenuBarItemManager.diagLog.debug("rehideTemporarilyShownItems: waiting for another operation to finish")
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            isProcessingTemporaryItem = true
+        }
+        MenuBarItemManager.diagLog.debug("rehideTemporarilyShownItems: started (force=\(force), isCalledFromTemporarilyShow=\(isCalledFromTemporarilyShow))")
+        defer {
+            MenuBarItemManager.diagLog.debug("rehideTemporarilyShownItems: finished (force=\(force), isCalledFromTemporarilyShow=\(isCalledFromTemporarilyShow))")
+            if !isCalledFromTemporarilyShow {
+                isProcessingTemporaryItem = false
+            }
+        }
+
         if !force {
             guard !temporarilyShownItemContexts.contains(where: { $0.isShowingInterface }) else {
                 MenuBarItemManager.diagLog.debug("Menu bar item interface is shown, so waiting to rehide")
