@@ -271,7 +271,7 @@ final class MenuBarItemManager: ObservableObject {
                     return
                 }
                 Task {
-                    await self.cacheItemsRegardless()
+                    await self.appState?.imageCache.updateCache(sections: MenuBarSection.Name.allCases)
                 }
             }
             .store(in: &c)
@@ -290,7 +290,7 @@ final class MenuBarItemManager: ObservableObject {
                     return
                 }
                 Task {
-                    await self.cacheItemsRegardless()
+                    await self.appState?.imageCache.updateCache(sections: MenuBarSection.Name.allCases)
                 }
             }
             .store(in: &c)
