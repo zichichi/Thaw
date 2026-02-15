@@ -6864,7 +6864,15 @@
       }
     },
     "Only on displays with notch" : {
-      "comment" : "A toggle that lets the user choose whether to show the Thaw Bar only on displays with a notch."
+      "comment" : "A toggle that lets the user choose whether to show the Thaw Bar only on displays with a notch.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nur auf Bildschirmen mit Notch"
+          }
+        }
+      }
     },
     "Open %@ Settings" : {
       "comment" : "A button that opens the settings app to grant screen recording permissions for the \\(Constants.displayName) Bar.",
@@ -8109,7 +8117,7 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Menüleiste-Einträge durchsuchen"
+            "value" : "Menüleisten-Einträge durchsuchen"
           }
         },
         "es" : {
@@ -9775,7 +9783,7 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Die Zeit, die gewartet wird, bevor beim Darüberschweben Menüleisten-Einträge angezeigt wird."
+            "value" : "Die Zeit, die gewartet wird, bevor beim Darüberschweben Menüleisten-Einträge angezeigt werden."
           }
         },
         "es" : {
@@ -10904,7 +10912,7 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Erstellt und speichert detaillierte Protokolldateien zur Fehlersuche unter ~/Library/Logs/Thaw/. Wenn nicht benötigt, deaktivieren um unnötige Schreibvorgänge zu vermeiden."
+            "value" : "Erstellt und speichert detaillierte Protokolldateien zur Fehlersuche unter ~/Library/Logs/Thaw/. Wenn nicht benötigt, Funktion deaktivieren, um unnötige Schreibvorgänge zu vermeiden."
           }
         },
         "es" : {
