@@ -826,6 +826,24 @@
               }
             }
           }
+        },
+        "it" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lldsecondo"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld secondi"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -6389,6 +6407,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Item juga dapat diatur dengan menahan tombol ⌘ Command lalu menyeretnya di bar menu."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "È anche possibile organizzare gli elementi tenendo premuto ⌘ Comando e trascinandoli nella barra dei menu."
           }
         },
         "ko" : {
