@@ -1353,6 +1353,7 @@ extension MenuBarItemManager {
                 if origin != initialOrigin {
                     return origin
                 }
+                try await Task.sleep(for: .milliseconds(10))
             }
         }
         let timeoutTask = Task(timeout: timeout) {
