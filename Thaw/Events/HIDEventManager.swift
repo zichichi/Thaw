@@ -226,25 +226,27 @@ final class HIDEventManager: ObservableObject {
     /// clicks on unmanaged items like Clock and Control Center are correctly
     /// detected as being on a menu bar item, not on empty space.
     private func rebuildWindowBoundsLookup(from cache: MenuBarItemManager.ItemCache) {
-        // Start with managed items whose bounds are already known.
-        let items = cache.managedItems
         var knownWindowIDs = Set<CGWindowID>()
         var buffer = [(windowID: CGWindowID, bounds: CGRect)]()
-        buffer.reserveCapacity(items.count)
-        for item in items where item.isOnScreen {
-            buffer.append((windowID: item.windowID, bounds: item.bounds))
-            knownWindowIDs.insert(item.windowID)
-        }
 
-        // Query all on-screen menu bar item windows and add any that aren't
-        // already covered by the managed items (e.g. Clock, Control Center).
+        // Query all on-screen menu bar item windows first to get fresh bounds.
+        // This ensures we have accurate bounds even if the cache is stale.
         let allWindowIDs = Bridging.getMenuBarWindowList(option: [
             .onScreen, .activeSpace, .itemsOnly,
         ])
-        for windowID in allWindowIDs where !knownWindowIDs.contains(windowID) {
+        for windowID in allWindowIDs {
             if let bounds = Bridging.getWindowBounds(for: windowID) {
                 buffer.append((windowID: windowID, bounds: bounds))
+                knownWindowIDs.insert(windowID)
             }
+        }
+
+        // Add any managed items that might not be in the Window Server list yet.
+        // This is a fallback for items that might not be reported by the Window Server.
+        let items = cache.managedItems
+        for item in items where item.isOnScreen && !knownWindowIDs.contains(item.windowID) {
+            buffer.append((windowID: item.windowID, bounds: item.bounds))
+            knownWindowIDs.insert(item.windowID)
         }
 
         let entries = buffer
@@ -400,6 +402,8 @@ extension HIDEventManager {
     // MARK: Handle Show On Click
 
     private func handleShowOnClick(appState: AppState, screen: NSScreen, isDoubleClick: Bool = false) {
+        rebuildWindowBoundsLookup(from: appState.itemManager.itemCache)
+
         guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
             return
         }
