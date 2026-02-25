@@ -306,6 +306,20 @@ final class MenuBarItemManager: ObservableObject {
         }
         .store(in: &c)
 
+        NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didLaunchApplicationNotification
+        )
+        .debounce(for: 1.0, scheduler: DispatchQueue.main)
+        .sink { [weak self] _ in
+            guard let self else {
+                return
+            }
+            Task {
+                await self.cacheItemsRegardless()
+            }
+        }
+        .store(in: &c)
+
         appState.navigationState.$settingsNavigationIdentifier
             .sink { [weak self] identifier in
                 guard let self, identifier == .menuBarLayout else {
