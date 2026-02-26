@@ -2857,12 +2857,32 @@ extension MenuBarItemManager {
         MenuBarItemManager.diagLog.debug("restoreItemsToSavedSections: waiting for menu bar to settle...")
         try? await Task.sleep(for: .milliseconds(500))
 
-        // Build lookup for saved sections.
+        // Build two lookups from savedSectionOrder:
+        // 1. uniqueIdentifier → saved section (exact match)
+        // 2. namespace string → saved section (fallback for dynamic-title apps)
+        //
+        // A namespace that appears in more than one section is ambiguous; we
+        // remove it from the fallback map so we never guess wrong.
         var savedSectionForItem = [String: MenuBarSection.Name]()
+        var savedSectionByNamespace = [String: MenuBarSection.Name]()
+        var ambiguousNamespaces = Set<String>()
         for (sectionKeyString, identifiers) in savedSectionOrder {
             guard let section = sectionName(for: sectionKeyString) else { continue }
             for identifier in identifiers {
                 savedSectionForItem[identifier] = section
+                // Extract namespace (everything before the first ":").
+                let ns = String(identifier.prefix(while: { $0 != ":" }))
+                if ambiguousNamespaces.contains(ns) {
+                    // Already known to span multiple sections — skip.
+                    continue
+                }
+                if let existing = savedSectionByNamespace[ns], existing != section {
+                    // Namespace spans multiple sections — invalidate fallback.
+                    savedSectionByNamespace.removeValue(forKey: ns)
+                    ambiguousNamespaces.insert(ns)
+                } else {
+                    savedSectionByNamespace[ns] = section
+                }
             }
         }
 
@@ -2883,20 +2903,24 @@ extension MenuBarItemManager {
 
             guard let currentSection = context.findSection(for: item) else { continue }
 
-            // Check both full uniqueIdentifier and base identifier (without instanceIndex)
-            // since instanceIndex may change after app restart.
-            let baseIdentifier = "\(item.tag.namespace):\(item.tag.title)"
-            let savedSection = savedSectionForItem[item.uniqueIdentifier] ?? savedSectionForItem[baseIdentifier]
-            guard let targetSection = savedSection else {
-                MenuBarItemManager.diagLog.debug("restoreItemsToSavedSections: \(item.uniqueIdentifier) (base: \(baseIdentifier)) not in saved sections, skipping")
+            // Prefer exact match; fall back to namespace-only match for apps whose
+            // item titles change on every appearance (e.g. Dato calendar events).
+            let namespaceString = item.tag.namespace.description
+            let savedSection: MenuBarSection.Name
+            if let exact = savedSectionForItem[item.uniqueIdentifier] {
+                savedSection = exact
+            } else if DynamicItemOverrides.isDynamic(namespaceString),
+                      let fallback = savedSectionByNamespace[namespaceString] {
+                savedSection = fallback
+            } else {
                 continue
             }
-            MenuBarItemManager.diagLog.debug("restoreItemsToSavedSections: checking \(item.uniqueIdentifier) - currentSection=\(currentSection.logString), targetSection=\(targetSection.logString)")
-            guard currentSection != targetSection else { continue }
+
+            guard currentSection != savedSection else { continue }
 
             // Item is in the wrong section — move it.
             let destination: MoveDestination
-            switch targetSection {
+            switch savedSection {
             case .visible:
                 destination = .rightOfItem(controlItems.hidden)
             case .hidden:
@@ -2914,7 +2938,7 @@ extension MenuBarItemManager {
             }
 
             MenuBarItemManager.diagLog.info(
-                "Restoring \(item.logString) from \(currentSection.logString) to \(targetSection.logString)"
+                "Restoring \(item.logString) from \(currentSection.logString) to \(savedSection.logString)"
             )
 
             do {
@@ -2923,12 +2947,12 @@ extension MenuBarItemManager {
                 MenuBarItemManager.diagLog.debug("Move completed successfully for restore")
             } catch let error as EventError {
                 MenuBarItemManager.diagLog.error(
-                    "Failed to restore \(item.logString) to \(targetSection.logString): \(error.errorDescription ?? error.description)"
+                    "Failed to restore \(item.logString) to \(savedSection.logString): \(error.errorDescription ?? error.description)"
                 )
                 continue
             } catch {
                 MenuBarItemManager.diagLog.error(
-                    "Failed to restore \(item.logString) to \(targetSection.logString): \(error)"
+                    "Failed to restore \(item.logString) to \(savedSection.logString): \(error)"
                 )
                 continue
             }
@@ -2946,6 +2970,11 @@ extension MenuBarItemManager {
     /// Only triggers when the set of window IDs has changed (items were
     /// recreated by an app restart), not when items were merely repositioned
     /// (user drag). This prevents undoing the user's manual reordering.
+    ///
+    /// - Note: For apps with dynamic item titles (see `DynamicItemOverrides`),
+    ///   this function restores the **section** but not the intra-section order,
+    ///   because the saved position key includes the old title which no longer
+    ///   matches the new item.
     ///
     /// Returns `true` if any items were moved.
     private func restoreSavedItemOrder(
