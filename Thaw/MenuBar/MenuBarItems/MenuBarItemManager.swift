@@ -3095,26 +3095,49 @@ extension MenuBarItemManager {
                 """
             )
 
+            // For the hidden/alwaysHidden sections, use the control item as the anchor
+            // rather than a saved item. This prevents new items (like wispr-flow) that
+            // appear on the right side from being used as anchors, which would cause
+            // the saved items to be placed in reverse order.
+            let useControlItemAsAnchor: Bool
+            let anchorControlItem: MenuBarItem?
+            switch sectionName {
+            case .hidden:
+                useControlItemAsAnchor = true
+                anchorControlItem = controlItems.hidden
+            case .alwaysHidden:
+                useControlItemAsAnchor = true
+                anchorControlItem = controlItems.alwaysHidden
+            case .visible:
+                useControlItemAsAnchor = false
+                anchorControlItem = nil
+            }
+
             // Find the first valid anchor that is not temporarily shown.
             var anchorIndex = 0
             var anchor: MenuBarItem?
-            while anchorIndex < filteredSaved.count {
-                guard let candidate = itemsByID[filteredSaved[anchorIndex]] else {
-                    anchorIndex += 1
-                    continue
+            if useControlItemAsAnchor, let controlItem = anchorControlItem {
+                anchor = controlItem
+            } else {
+                while anchorIndex < filteredSaved.count {
+                    guard let candidate = itemsByID[filteredSaved[anchorIndex]] else {
+                        anchorIndex += 1
+                        continue
+                    }
+                    let tagString = "\(candidate.tag.namespace):\(candidate.tag.title)"
+                    if activelyShownTags.contains(tagString) {
+                        anchorIndex += 1
+                        continue
+                    }
+                    anchor = candidate
+                    break
                 }
-                let tagString = "\(candidate.tag.namespace):\(candidate.tag.title)"
-                if activelyShownTags.contains(tagString) {
-                    anchorIndex += 1
-                    continue
-                }
-                anchor = candidate
-                break
             }
             guard let anchor else { continue }
 
-            // Move items right-to-left: the anchor is the rightmost valid item;
-            // each subsequent item is placed to its left.
+            // Move items to restore saved order. For hidden/alwaysHidden sections,
+            // move items to the right of the anchor (control item). For visible,
+            // move items to the left of the anchor.
             var currentAnchor = anchor
             for i in (anchorIndex + 1) ..< filteredSaved.count {
                 guard let item = itemsByID[filteredSaved[i]] else { continue }
@@ -3124,7 +3147,16 @@ extension MenuBarItemManager {
                 guard !activelyShownTags.contains(tagString) else { continue }
 
                 do {
-                    try await move(item: item, to: .leftOfItem(currentAnchor), skipInputPause: true)
+                    let destination: MoveDestination
+                    if useControlItemAsAnchor {
+                        // For hidden sections, place items to the right of the anchor
+                        // (towards the visible section).
+                        destination = .rightOfItem(currentAnchor)
+                    } else {
+                        // For visible section, place items to the left of the anchor.
+                        destination = .leftOfItem(currentAnchor)
+                    }
+                    try await move(item: item, to: destination, skipInputPause: true)
                     didMove = true
                     // Only advance the anchor after a successful move so that
                     // the next item targets the last correctly placed position.
