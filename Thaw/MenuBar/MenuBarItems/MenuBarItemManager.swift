@@ -153,6 +153,10 @@ final class MenuBarItemManager: ObservableObject {
     /// (e.g. app update checks). Cleared after a fixed delay, then one final
     /// restore runs to enforce the user's saved layout.
     private var isInStartupSettling = false
+    /// Handle to the in-flight startup settling Task. Retained so that a
+    /// subsequent performSetup() call can cancel the previous settling period
+    /// before starting a new one, preventing multiple concurrent settling tasks.
+    private var startupSettlingTask: Task<Void, Never>?
     /// Persisted bundle identifiers explicitly placed in hidden section.
     private var pinnedHiddenBundleIDs = Set<String>()
     /// Persisted bundle identifiers explicitly placed in always-hidden section.
@@ -343,13 +347,26 @@ final class MenuBarItemManager: ObservableObject {
         // After the settling period ends, one final cacheItemsRegardless() enforces the
         // user's saved layout against whatever macOS placed items.
         let settleDelay: Duration = ProcessInfo.processInfo.systemUptime < 60 ? .seconds(30) : .seconds(5)
+        // Cancel any in-flight settling task before starting a new one.
+        // Prevents multiple concurrent settling tasks if performSetup() is called
+        // again (e.g. after a display reconnect or permission re-grant triggers
+        // a second setup pass). The cancelled task exits without touching shared
+        // state; this call manages isInStartupSettling for the new period.
+        startupSettlingTask?.cancel()
         isInStartupSettling = true
         MenuBarItemManager.diagLog.debug("performSetup: startup settling period started (\(settleDelay))")
         // @MainActor ensures the flag flip and final cache call are never
         // interleaved with notification-triggered cache cycles between them.
-        Task { @MainActor [weak self] in
+        startupSettlingTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: settleDelay)
+            do {
+                try await Task.sleep(for: settleDelay)
+            } catch {
+                // Cancelled by a subsequent performSetup() call; exit without
+                // touching shared state — the new call manages isInStartupSettling.
+                MenuBarItemManager.diagLog.debug("performSetup: startup settling task cancelled")
+                return
+            }
             isInStartupSettling = false
             MenuBarItemManager.diagLog.debug("performSetup: startup settling period ended, running restore")
             // skipRecentMoveCheck: true — relocateNewLeftmostItems/relocatePendingItems
