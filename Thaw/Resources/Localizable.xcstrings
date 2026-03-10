@@ -698,7 +698,7 @@
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ è attualmente in esecuzione. L'esecuzione simultanea di più gestori della barra dei menu può causare problemi di visualizzazione e comportamenti imprevisti. Si consiglia di uscire da ￼ %2$@prima di utilizzare Thaw."
+            "value" : "%1$@ è attualmente in esecuzione. L'esecuzione simultanea di più gestori della barra dei menu può causare problemi di visualizzazione e comportamenti imprevisti. Si consiglia di uscire da ￼ %2$@ prima di utilizzare Thaw."
           }
         },
         "ja" : {
@@ -1376,7 +1376,7 @@
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%lldfps"
+            "value" : "%lld fps"
           }
         },
         "ja" : {
