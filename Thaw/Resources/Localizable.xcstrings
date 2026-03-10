@@ -695,6 +695,12 @@
             "value" : "%1$@ sedang berjalan. Menjalankan beberapa pengelola bar menu secara bersamaan dapat menyebabkan masalah tampilan dan perilaku yang tidak terduga. Sebaiknya keluar dari %2$@ sebelum menggunakan Thaw."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ è attualmente in esecuzione. L'esecuzione simultanea di più gestori della barra dei menu può causare problemi di visualizzazione e comportamenti imprevisti. Si consiglia di uscire da ￼ %2$@prima di utilizzare Thaw."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -1367,6 +1373,12 @@
             "value" : "%lld FPS"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lldfps"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -1769,6 +1781,12 @@
             "value" : "+"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "+"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -1805,6 +1823,12 @@
             "value" : "⌘"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "⌘"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -1836,6 +1860,12 @@
           }
         },
         "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "⎋"
+          }
+        },
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "⎋"
@@ -2739,6 +2769,12 @@
             "value" : "Selalu tampilkan item tersembunyi"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra sempre gli elementi nascosti"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -2775,6 +2811,12 @@
             "value" : "Selalu tampilkan item bar menu tersembunyi pada bar menu di layar ini."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra sempre gli elementi nascosti della barra dei menu nella barra dei menu su questa schermata."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -2809,6 +2851,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Selalu tampilkan Bar %@ di posisi penunjuk saat ditampilkan dengan pintasan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra sempre la barra ￼ nella posizione del puntatore del %@mouse quando viene visualizzata tramite un tasto di scelta rapida."
           }
         },
         "ja" : {
@@ -4382,6 +4430,12 @@
             "value" : "Tidak dapat memindahkan ikon %@."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile spostare l’icona %@"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -4898,6 +4952,12 @@
             "value" : "Periksa Izin"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Controllo permessi"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -5225,6 +5285,12 @@
             "value" : "Chevron (Bawah)"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chevron (giù)"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -5453,6 +5519,12 @@
             "value" : "Klik area kosong bar menu untuk menampilkan item bar menu tersembunyi."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fare clic su un'area vuota della barra dei menu per visualizzare gli elementi nascosti della barra dei menu."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -5585,6 +5657,12 @@
             "value" : "Konfirmasi"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conferma"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -5619,6 +5697,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pengelola Bar Menu Lain Terdeteksi"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rilevato gestore barra menu in conflitto"
           }
         },
         "ja" : {
@@ -5739,6 +5823,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lanjutkan"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Continua comunque"
           }
         },
         "ja" : {
@@ -6533,6 +6623,12 @@
             "value" : "Buang"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scartare"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -6759,6 +6855,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Layar"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schermi"
           }
         },
         "ja" : {
@@ -7187,6 +7289,12 @@
             "value" : "Klik area kosong bar menu untuk menampilkan item bar menu selalu-tersembunyi."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fare doppio clic su un'area vuota della barra dei menu per visualizzare le voci della barra dei menu sempre nascoste."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -7221,6 +7329,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klik dua kali untuk selalu-tersembunyi"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fare doppio clic per nascondere sempre"
           }
         },
         "ja" : {
@@ -7547,6 +7661,12 @@
             "value" : "E"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "E"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -7677,6 +7797,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Edit Nama"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modifica Nome"
           }
         },
         "ja" : {
@@ -9731,6 +9857,12 @@
             "value" : "Seberapa sering ikon bar menu beranimasi diperbaharui di panel. Nilai lebih tinggi lebih mulus, tetapi menggunakan lebih banyak CPU."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frequenza di aggiornamento delle icone animate della barra dei menu nei pannelli. Valori più alti sono più fluidi, ma utilizzano più CPU."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -9957,6 +10089,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Laju penyegaran ikon"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frequenza di aggiornamento dell'icona"
           }
         },
         "ja" : {
@@ -10854,6 +10992,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Margin kiri"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Margine sinistro"
           }
         },
         "ja" : {
@@ -13194,6 +13338,12 @@
             "value" : "Tidak tersedia karena Bar %@ diaktifkan untuk layar ini."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non disponibile perché la barra %@ è abilitata per questa visualizzazione."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -13321,6 +13471,12 @@
           }
         },
         "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notch"
+          }
+        },
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Notch"
@@ -14232,6 +14388,12 @@
             "value" : "Keluar Thaw"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiudi Thaw"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -14542,6 +14704,12 @@
             "value" : "Atur ulang %@"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristina %@"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -14564,6 +14732,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Atur ulang semua pengaturan"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristina tutte le impostazioni"
           }
         },
         "ja" : {
@@ -14589,6 +14763,12 @@
             "value" : "Atur ulang semua pengaturan ke pengaturan bawaan. Tindakan ini tidak dapat dibatalkan."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristina tutte le impostazioni ai valori predefiniti. Questa azione non può essere annullata."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -14610,6 +14790,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Atur ulang semua pengaturan?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristinare tutte le impostazioni?"
           }
         },
         "ja" : {
@@ -15593,6 +15779,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Margin kanan"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Margine destro"
           }
         },
         "ja" : {
@@ -16783,6 +16975,12 @@
             "value" : "Tampilkan tip alat saat kursor diarahkan ke item bar menu di bar menu sistem."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra un suggerimento quando si passa il mouse sopra le voci della barra dei menu nella barra dei menu vera e propria."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -17011,6 +17209,12 @@
             "value" : "Tampilkan di posisi penunjuk saat menggunakan pintasan"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra al puntatore del mouse sul tasto di scelta rapida"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -17045,6 +17249,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tampilkan item bar menu tersembunyi di bar terpisah di bawah bar menu pada layar ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra gli elementi nascosti della barra dei menu in una barra separata sotto la barra dei menu in questa visualizzazione."
           }
         },
         "ja" : {
@@ -17375,6 +17585,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tampilkan latar belakang bar menu"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra lo sfondo della barra dei menu"
           }
         },
         "ja" : {
@@ -17797,6 +18013,12 @@
             "value" : "Tampilkan ikon %@ di bar menu. Klik untuk menampilkan item tersembunyi, klik dua kali untuk item selalu-tersembunyi, dan klik kanan untuk membuka pengaturan."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra l'icona %@ nella barra dei menu. Fai clic per mostrare gli elementi nascosti, fai doppio clic per renderli sempre nascosti e fai clic con il pulsante destro del mouse per le impostazioni."
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -17833,6 +18055,12 @@
             "value" : "Tampilkan tip alat di bar menu"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra i suggerimenti nella barra dei menu"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -17867,6 +18095,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Menampilkan latar belakang bar menu sistem. Aktifkan jika menggunakan wallpaper otomatis atau jika opsi 'Tampilkan latar belakang bar menu' dinonaktifkan di Pengaturan Sistem."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra lo sfondo della barra dei menu di sistema. Abilita questa opzione se utilizzi uno sfondo dinamico o se hai disabilitato l'opzione \"Mostra sfondo barra dei menu\" nelle Impostazioni di sistema."
           }
         },
         "ja" : {
@@ -19151,6 +19385,12 @@
             "value" : "Ikon %@ harus selalu berada di bagian terlihat."
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'icona %@ deve sempre rimanere nella sezione visibile"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -19185,6 +19425,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Durasi tunggu sebelum tip alat ditampilkan saat kursor diarahkan ke item bar menu."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tempo di attesa prima di visualizzare un suggerimento su una voce della barra dei menu."
           }
         },
         "ja" : {
@@ -19412,6 +19658,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opsi ini akan mengatur ulang semua pengaturan ke pengaturan bawaan. Tindakan ini tidak dapat dibatalkan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questa operazione ripristinerà tutte le impostazioni ai valori predefiniti. Questa azione non può essere annullata."
           }
         },
         "ja" : {
@@ -20014,6 +20266,12 @@
             "value" : "Jeda tip alat"
           }
         },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ritardo del suggerimento"
+          }
+        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -20048,6 +20306,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tip alat"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suggerimenti"
           }
         },
         "ja" : {
