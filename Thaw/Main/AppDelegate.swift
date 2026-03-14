@@ -93,6 +93,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationWillTerminate(_: Notification) {
+        appState.diagLog.info("Application will terminate - restoring all hidden items to visible section")
+
+        // Create a semaphore to wait for the async restore operation
+        let semaphore = DispatchSemaphore(value: 0)
+
+        Task {
+            // Restore all hidden items to visible section to prevent them
+            // from being stuck in a "blocked" state in macOS preferences
+            _ = await appState.itemManager.restoreAllItemsToVisible()
+            semaphore.signal()
+        }
+
+        // Wait up to 5 seconds for the restore to complete
+        let result = semaphore.wait(timeout: .now() + 5)
+        if result == .timedOut {
+            appState.diagLog.warning("Restore operation timed out during app termination")
+        } else {
+            appState.diagLog.info("Restore operation completed successfully during app termination")
+        }
+    }
+
     // MARK: Other Methods
 
     /// Handles `kAEGetURL` Apple Events and forwards `thaw://` URLs to `handleURL(_:)`.

@@ -3769,6 +3769,103 @@ extension MenuBarItemManager {
     func resetLayoutFromSettingsPane() async throws -> Int {
         try await resetLayoutToFreshState()
     }
+
+    /// Restores all items currently in hidden sections back to the visible section.
+    /// This is called when the app is terminating to prevent items from being stuck
+    /// in a "blocked" state in macOS's Control Center preferences.
+    ///
+    /// - Returns: The number of items that failed to move.
+    @MainActor
+    func restoreAllItemsToVisible() async -> Int {
+        MenuBarItemManager.diagLog.info("Restoring all hidden items to visible section before app termination")
+
+        guard let appState else {
+            MenuBarItemManager.diagLog.error("Cannot restore items: missing appState")
+            return 0
+        }
+
+        // Get current items
+        var items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+
+        // Get window IDs from ControlItem objects
+        let hiddenWID: CGWindowID? = appState.menuBarManager
+            .controlItem(withName: .hidden)?.window
+            .flatMap { CGWindowID(exactly: $0.windowNumber) }
+        let alwaysHiddenWID: CGWindowID? = appState.menuBarManager
+            .controlItem(withName: .alwaysHidden)?.window
+            .flatMap { CGWindowID(exactly: $0.windowNumber) }
+
+        // Create ControlItemPair to get MenuBarItem representations
+        guard let controlItems = ControlItemPair(
+            items: &items,
+            hiddenControlItemWindowID: hiddenWID,
+            alwaysHiddenControlItemWindowID: alwaysHiddenWID
+        ) else {
+            MenuBarItemManager.diagLog.error("Cannot restore items: unable to find hidden control item")
+            return 0
+        }
+
+        // Get bounds of control items
+        let hiddenBounds = bestBounds(for: controlItems.hidden)
+        let alwaysHiddenBounds = controlItems.alwaysHidden.map { bestBounds(for: $0) }
+
+        // Identify items in hidden or always-hidden sections
+        let itemsToRestore = items.filter { item in
+            guard item.isMovable, !item.isControlItem, item.tag != .visibleControlItem else {
+                return false
+            }
+            let bounds = Bridging.getWindowBounds(for: item.windowID) ?? item.bounds
+
+            // Item is in hidden section (left of hidden control item)
+            if bounds.maxX <= hiddenBounds.minX {
+                return true
+            }
+
+            // Item is in always-hidden section (left of always-hidden control item, if exists)
+            if let ahBounds = alwaysHiddenBounds, bounds.maxX <= ahBounds.minX {
+                return true
+            }
+
+            return false
+        }
+
+        guard !itemsToRestore.isEmpty else {
+            MenuBarItemManager.diagLog.debug("No items to restore - all items already in visible section")
+            return 0
+        }
+
+        MenuBarItemManager.diagLog.info("Found \(itemsToRestore.count) items to restore to visible section")
+
+        var failedMoves = 0
+
+        appState.hidEventManager.stopAll()
+        defer {
+            appState.hidEventManager.startAll()
+        }
+
+        // Move items to the right of the hidden control item (visible section)
+        for item in itemsToRestore {
+            do {
+                try await move(
+                    item: item,
+                    to: .rightOfItem(controlItems.hidden),
+                    skipInputPause: true,
+                    watchdogTimeout: Self.layoutWatchdogTimeout
+                )
+                MenuBarItemManager.diagLog.debug("Successfully restored \(item.logString) to visible section")
+            } catch {
+                failedMoves += 1
+                MenuBarItemManager.diagLog.error("Failed to restore \(item.logString) to visible section: \(error)")
+            }
+        }
+
+        MenuBarItemManager.diagLog.info("Restore completed: \(itemsToRestore.count - failedMoves)/\(itemsToRestore.count) items restored successfully")
+
+        // Give macOS a moment to settle
+        try? await Task.sleep(for: .milliseconds(200))
+
+        return failedMoves
+    }
 }
 
 // MARK: - CGEventField Helpers
