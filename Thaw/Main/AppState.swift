@@ -338,11 +338,13 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 defer { self.lastKnownScreenCount = count }
                 if count < self.lastKnownScreenCount {
-                    self.diagLog.warning("Detected display disconnect; restarting app to avoid stale state")
-                    self.restartSelf()
+                    self.diagLog.info("Detected display disconnect; state will be refreshed automatically")
+                    // App restart disabled - memory leak fixes allow dynamic display handling
+                    // self.restartSelf()
                 } else if count > self.lastKnownScreenCount {
-                    self.diagLog.warning("Detected display connect; restarting app to refresh state")
-                    self.restartSelf()
+                    self.diagLog.info("Detected display connect; state will be refreshed automatically")
+                    // App restart disabled - memory leak fixes allow dynamic display handling
+                    // self.restartSelf()
                 }
             }
             .store(in: &c)

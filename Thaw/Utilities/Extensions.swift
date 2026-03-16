@@ -661,6 +661,14 @@ extension NSScreen {
         menuBarHeightCache.removeAll()
     }
 
+    /// Removes cache entries for displays that are no longer connected.
+    /// This prevents memory growth when displays are reconnected (which assigns new display IDs).
+    static func cleanupDisconnectedDisplayCaches() {
+        let connectedDisplayIDs = Set(NSScreen.screens.map { $0.displayID })
+        menuBarHeightCache = menuBarHeightCache.filter { connectedDisplayIDs.contains($0.key) }
+        applicationMenuFrameCache = applicationMenuFrameCache.filter { connectedDisplayIDs.contains($0.key) }
+    }
+
     /// Returns the height of the menu bar on this screen.
     ///
     /// Results are cached per-display. A sentinel value of `-1` is stored when

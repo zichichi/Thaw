@@ -996,9 +996,11 @@ extension MenuBarItemManager {
                     await self?.cacheItemsIfNeeded()
                 }
                 return
-            } else {
-                isRestoringItemOrder = false
             }
+            // Note: isRestoringItemOrder remains true here so that if a concurrent
+            // cache call occurs (e.g., from app launch notification), it won't
+            // prematurely reset the flag and allow saveSectionOrder to run while
+            // we're still in the cooldown period from previous moves.
 
             let didRestoreOrder = await restoreSavedItemOrder(
                 items,
@@ -1028,6 +1030,12 @@ extension MenuBarItemManager {
             }
 
             await uncheckedCacheItems(items: items, controlItems: controlItems, displayID: displayID)
+
+            // Reset the flag since no restore happened in this cache cycle.
+            // This must be done before the function ends so that saveSectionOrder
+            // can run for future caches.
+            isRestoringItemOrder = false
+
             MenuBarItemManager.diagLog.debug("cacheItemsRegardless: finished, cache now has \(self.itemCache.managedItems.count) managed items")
         }
     }
@@ -1875,6 +1883,63 @@ extension MenuBarItemManager {
         }
     }
 
+    /// Checks if a menu bar item is in a "blocked" state (positioned at x=-1 off-screen).
+    /// Items in this state are stuck and cannot be interacted with normally.
+    private nonisolated func isItemBlocked(_ item: MenuBarItem) async -> Bool {
+        do {
+            let bounds = try await getCurrentBounds(for: item)
+            // x=-1 is the sentinel value macOS uses for "blocked" items
+            return bounds.origin.x == -1
+        } catch {
+            // If we can't get bounds, assume it's not blocked
+            return false
+        }
+    }
+
+    /// Validates that an item moved to the hidden section didn't get stuck at x=-1.
+    /// If the item is blocked, attempts to restore it to the visible section.
+    private func validateItemPositionAfterMove(
+        item: MenuBarItem,
+        destination: MoveDestination,
+        on displayID: CGDirectDisplayID
+    ) async {
+        // Only check when moving to hidden sections (left of control items)
+        guard case .leftOfItem = destination else { return }
+
+        // Check if item got stuck at x=-1
+        if await isItemBlocked(item) {
+            MenuBarItemManager.diagLog.warning("Item \(item.logString) stuck at x=-1 after move - attempting recovery")
+
+            // Find the control item to use as anchor for recovery
+            guard let appState else { return }
+            guard let hiddenControlItem = appState.menuBarManager.controlItem(withName: .hidden)?.window else {
+                MenuBarItemManager.diagLog.error("Cannot recover item: missing hidden control item window")
+                return
+            }
+
+            // Create a MenuBarItem representation of the control item for the destination
+            // We need to find it in the current cache
+            let items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+            guard let hiddenMenuBarItem = items.first(where: { $0.windowID == CGWindowID(hiddenControlItem.windowNumber) }) else {
+                MenuBarItemManager.diagLog.error("Cannot recover item: control item not found in menu bar items")
+                return
+            }
+
+            // Attempt to move the item back to the visible section
+            do {
+                try await move(
+                    item: item,
+                    to: .rightOfItem(hiddenMenuBarItem),
+                    on: displayID,
+                    skipInputPause: true
+                )
+                MenuBarItemManager.diagLog.info("Successfully recovered \(item.logString) from blocked state to visible section")
+            } catch {
+                MenuBarItemManager.diagLog.error("Failed to recover \(item.logString) from blocked state: \(error)")
+            }
+        }
+    }
+
     /// Moves a menu bar item to the given destination.
     ///
     /// - Parameters:
@@ -1891,6 +1956,13 @@ extension MenuBarItemManager {
             throw EventError.itemNotMovable(item)
         }
         guard let appState else {
+            throw EventError.cannotComplete
+        }
+
+        // Check if item is already in a blocked state before attempting to move
+        // This prevents trying to move items that are already stuck
+        if await isItemBlocked(item) {
+            MenuBarItemManager.diagLog.warning("Skipping move for \(item.logString) - item is already blocked (x=-1)")
             throw EventError.cannotComplete
         }
 
@@ -1956,6 +2028,8 @@ extension MenuBarItemManager {
                 // Verify the item actually reached the correct position.
                 if try await itemHasCorrectPosition(item: item, for: destination, on: resolvedDisplayID) {
                     MenuBarItemManager.diagLog.debug("Attempt \(n) succeeded and verified, finished with move")
+                    // Validate that item didn't get stuck when moving to hidden section
+                    await validateItemPositionAfterMove(item: item, destination: destination, on: resolvedDisplayID)
                     return
                 }
                 MenuBarItemManager.diagLog.debug("Attempt \(n) events succeeded but item not at destination, retrying")
@@ -1975,6 +2049,9 @@ extension MenuBarItemManager {
                 throw EventError.cannotComplete
             }
         }
+
+        // After all attempts, validate the final position
+        await validateItemPositionAfterMove(item: item, destination: destination, on: resolvedDisplayID)
     }
 }
 
@@ -2782,21 +2859,18 @@ extension MenuBarItemManager {
         let alwaysHiddenTags = Set(itemCache[.alwaysHidden].map(\.tag))
 
         /// Track bundle IDs for pinned items in hidden/always-hidden.
+        /// NOTE: We no longer automatically pin bundle IDs based on current section
+        /// placement. This was causing issues where new items from apps like SwiftBar
+        /// would not be auto-relocated to visible because a previous item from the
+        /// same app was in hidden. Users can still manually place items in hidden
+        /// sections via the Layout Bar.
         func bundleID(for item: MenuBarItem) -> String? {
             item.sourceApplication?.bundleIdentifier ?? item.owningApplication?.bundleIdentifier
         }
 
-        for item in itemCache[.hidden] {
-            if let id = bundleID(for: item) {
-                pinnedHiddenBundleIDs.insert(id)
-            }
-        }
-        for item in itemCache[.alwaysHidden] {
-            if let id = bundleID(for: item) {
-                pinnedAlwaysHiddenBundleIDs.insert(id)
-            }
-        }
-        persistPinnedBundleIDs()
+        // Skip automatic bundle ID pinning - let per-item tracking handle it
+        // pinnedHiddenBundleIDs and pinnedAlwaysHiddenBundleIDs are now only
+        // updated when users explicitly move items via the Layout Bar UI
 
         // Identify items that are to the left of the hidden control item bounds.
         let hiddenBounds = bestBounds(for: controlItems.hidden)
@@ -2877,9 +2951,11 @@ extension MenuBarItemManager {
             let isNewIdentity = !knownItemIdentifiers.contains(identifier)
             let isNewID = previousIDs.isEmpty ? isNewIdentity : !previousIDs.contains(item.windowID)
             let notPlacedHidden = !hiddenTags.contains(item.tag) && !alwaysHiddenTags.contains(item.tag)
-            let bundle = bundleID(for: item)
-            let notPinnedHidden = bundle.map { !pinnedHiddenBundleIDs.contains($0) && !pinnedAlwaysHiddenBundleIDs.contains($0) } ?? true
-            return notPlacedHidden && notPinnedHidden && (isNewID || isNewIdentity)
+            // Note: We removed the bundle ID pinning check (notPinnedHidden) because it was
+            // preventing new items from apps like SwiftBar from being auto-relocated when
+            // other items from the same app were in hidden sections. Per-item tracking via
+            // notPlacedHidden and knownItemIdentifiers is sufficient.
+            return notPlacedHidden && (isNewID || isNewIdentity)
         }
         guard let candidate else {
             if !leftmostItems.isEmpty && savedSectionForIdentifier.isEmpty == false {
@@ -3761,6 +3837,87 @@ extension MenuBarItemManager {
     func resetLayoutFromSettingsPane() async throws -> Int {
         try await resetLayoutToFreshState()
     }
+
+    /// Restores items that are stuck in a "blocked" state (positioned at x=-1)
+    /// back to the visible section. This is called when the app is terminating
+    /// to prevent items from being permanently stuck in macOS's Control Center preferences.
+    /// Only items at x=-1 are restored; normally hidden items are left as-is.
+    ///
+    /// - Returns: The number of items that failed to move.
+    @MainActor
+    func restoreBlockedItemsToVisible() async -> Int {
+        MenuBarItemManager.diagLog.info("Checking for blocked items (x=-1) to restore before app termination")
+
+        guard let appState else {
+            MenuBarItemManager.diagLog.error("Cannot restore items: missing appState")
+            return 0
+        }
+
+        // Get current items
+        var items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+
+        // Find items that are blocked (at x=-1)
+        let blockedItems = items.filter { item in
+            guard item.isMovable, !item.isControlItem else { return false }
+            let bounds = Bridging.getWindowBounds(for: item.windowID) ?? item.bounds
+            return bounds.origin.x == -1
+        }
+
+        guard !blockedItems.isEmpty else {
+            MenuBarItemManager.diagLog.debug("No blocked items found - skipping restoration")
+            return 0
+        }
+
+        MenuBarItemManager.diagLog.warning("Found \(blockedItems.count) blocked items at x=-1, attempting to restore")
+
+        // Get window IDs from ControlItem objects
+        let hiddenWID: CGWindowID? = appState.menuBarManager
+            .controlItem(withName: .hidden)?.window
+            .flatMap { CGWindowID(exactly: $0.windowNumber) }
+        let alwaysHiddenWID: CGWindowID? = appState.menuBarManager
+            .controlItem(withName: .alwaysHidden)?.window
+            .flatMap { CGWindowID(exactly: $0.windowNumber) }
+
+        // Create ControlItemPair to get MenuBarItem representations
+        guard let controlItems = ControlItemPair(
+            items: &items,
+            hiddenControlItemWindowID: hiddenWID,
+            alwaysHiddenControlItemWindowID: alwaysHiddenWID
+        ) else {
+            MenuBarItemManager.diagLog.error("Cannot restore items: unable to find hidden control item")
+            return blockedItems.count
+        }
+
+        var failedMoves = 0
+
+        appState.hidEventManager.stopAll()
+        defer {
+            appState.hidEventManager.startAll()
+        }
+
+        // Move blocked items to the right of the hidden control item (visible section)
+        for item in blockedItems {
+            do {
+                try await move(
+                    item: item,
+                    to: .rightOfItem(controlItems.hidden),
+                    skipInputPause: true,
+                    watchdogTimeout: Self.layoutWatchdogTimeout
+                )
+                MenuBarItemManager.diagLog.info("Successfully restored blocked item \(item.logString) to visible section")
+            } catch {
+                failedMoves += 1
+                MenuBarItemManager.diagLog.error("Failed to restore blocked item \(item.logString): \(error)")
+            }
+        }
+
+        MenuBarItemManager.diagLog.info("Restore completed: \(blockedItems.count - failedMoves)/\(blockedItems.count) blocked items restored")
+
+        // Give macOS a moment to settle
+        try? await Task.sleep(for: .milliseconds(200))
+
+        return failedMoves
+    }
 }
 
 // MARK: - CGEventField Helpers
@@ -3838,7 +3995,7 @@ private extension CGMouseButton {
 private extension Duration {
     /// Returns the duration in milliseconds as a Double.
     var milliseconds: Double {
-        let (seconds, attoseconds) = self.components
+        let (seconds, attoseconds) = components
         return Double(seconds) * 1000 + Double(attoseconds) / 1_000_000_000_000_000
     }
 }

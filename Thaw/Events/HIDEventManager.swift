@@ -309,6 +309,7 @@ final class HIDEventManager: ObservableObject {
             )
             .sink { [weak self] _ in
                 NSScreen.invalidateMenuBarHeightCache()
+                NSScreen.cleanupDisconnectedDisplayCaches()
                 self?.windowBoundsLock.withLock { $0.removeAll() }
             }
             .store(in: &c)
@@ -402,8 +403,6 @@ extension HIDEventManager {
     // MARK: Handle Show On Click
 
     private func handleShowOnClick(appState: AppState, screen: NSScreen, isDoubleClick: Bool = false) {
-        rebuildWindowBoundsLookup(from: appState.itemManager.itemCache)
-
         guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
             return
         }
@@ -764,6 +763,10 @@ extension HIDEventManager {
 
     /// Shows a tooltip for the menu bar item under the cursor, if enabled.
     private func handleMenuBarTooltip(appState: AppState, screen: NSScreen) {
+        guard ScreenCapture.cachedCheckPermissions() else {
+            return
+        }
+
         guard appState.settings.advanced.showMenuBarTooltips else {
             return
         }

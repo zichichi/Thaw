@@ -174,6 +174,10 @@ final class MenuBarSearchPanel: NSPanel {
         // setFrameAutosaveName("MenuBarSearchPanel") // Manual persistence is used instead.
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     /// Called when the panel loses key focus.
     @objc private func panelResignedKey(_: Notification) {
         close()
@@ -497,9 +501,34 @@ private struct MenuBarSearchContentView: View {
         }
     }
 
+    private func openPermissionsSettings() {
+        closePanel()
+        itemManager.appState?.navigationState.settingsNavigationIdentifier = .advanced
+        itemManager.appState?.activate(withPolicy: .regular)
+        itemManager.appState?.openWindow(.settings)
+    }
+
     @ViewBuilder
     private var mainContent: some View {
-        if hasItems {
+        if !ScreenCapture.cachedCheckPermissions() {
+            VStack(spacing: 16) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 32))
+                    .foregroundStyle(.secondary)
+                Text("Screen recording permissions are required to search menu bar items.")
+                    .font(.title3)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                Button {
+                    openPermissionsSettings()
+                } label: {
+                    Text("Open \(Constants.displayName) Settings")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.link)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if hasItems {
             SectionedList(
                 selection: $model.selection,
                 items: $model.displayedItems,

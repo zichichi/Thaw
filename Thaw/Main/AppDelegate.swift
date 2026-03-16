@@ -93,6 +93,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationWillTerminate(_: Notification) {
+        appState.diagLog.info("Application will terminate - checking for blocked items to restore")
+
+        // Create a semaphore to wait for the async restore operation
+        let semaphore = DispatchSemaphore(value: 0)
+
+        Task {
+            // Only restore items that are stuck at x=-1 (blocked state),
+            // leaving normally hidden items in place
+            _ = await appState.itemManager.restoreBlockedItemsToVisible()
+            semaphore.signal()
+        }
+
+        // Wait up to 5 seconds for the restore to complete
+        let result = semaphore.wait(timeout: .now() + 5)
+        if result == .timedOut {
+            appState.diagLog.warning("Blocked item restore operation timed out during app termination")
+        } else {
+            appState.diagLog.info("Blocked item restore operation completed during app termination")
+        }
+    }
+
     // MARK: Other Methods
 
     /// Handles `kAEGetURL` Apple Events and forwards `thaw://` URLs to `handleURL(_:)`.
