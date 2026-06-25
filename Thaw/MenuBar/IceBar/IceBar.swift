@@ -16,7 +16,7 @@ final class IceBarPanel: NSPanel {
     /// The shared app state.
     private weak var appState: AppState?
 
-    /// Manager for the Ice Bar's color.
+    /// Manager for the Thaw Bar's color.
     private let colorManager = IceBarColorManager()
 
     /// The currently displayed section.
@@ -27,13 +27,19 @@ final class IceBarPanel: NSPanel {
     /// settings.
     private var hotkeyLocationOverride = false
 
+    /// Timestamp of most recent `show()`. Used to suppress
+    /// `didChangeScreenParametersNotification` auto-hide when the
+    /// user clicks an inactive screen's menubar (active menu bar
+    /// change posts that notification, racing with the show).
+    private var lastShowTimestamp: Date?
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
     /// Background cache task started when the panel is shown.
     private var cacheTask: Task<Void, Never>?
 
-    /// Creates a new Ice Bar panel.
+    /// Creates a new Thaw Bar panel with Liquid Glass support.
     init() {
         super.init(
             contentRect: .zero,
@@ -47,7 +53,9 @@ final class IceBarPanel: NSPanel {
         self.allowsToolTipsWhenApplicationIsInactive = true
         self.isFloatingPanel = true
         self.animationBehavior = .none
+        // Liquid Glass: transparent window with shadow
         self.backgroundColor = .clear
+        self.isOpaque = false
         self.hasShadow = true
         self.level = .mainMenu + 1
         self.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle, .moveToActiveSpace, .stationary]
@@ -67,12 +75,23 @@ final class IceBarPanel: NSPanel {
         var c = Set<AnyCancellable>()
 
         // Hide the panel when the active space or screen parameters change.
+        // Guard against didChangeScreenParametersNotification racing with
+        // show(): clicking an inactive screen's menubar activates it, which
+        // posts this notification. Without the guard, the notification would
+        // hide the panel immediately after show() opened it.
         Publishers.Merge(
             NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification),
             NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
         )
         .sink { [weak self] _ in
-            self?.hide()
+            guard
+                let self,
+                let ts = self.lastShowTimestamp,
+                Date().timeIntervalSince(ts) >= 1
+            else {
+                return
+            }
+            self.hide()
         }
         .store(in: &c)
 
@@ -97,7 +116,7 @@ final class IceBarPanel: NSPanel {
         }
 
         func getOrigin(for iceBarLocation: IceBarLocation) -> CGPoint {
-            let menuBarHeight = screen.getMenuBarHeight() ?? 0
+            let menuBarHeight = screen.getMenuBarHeightEstimate()
             let defaultOriginY = ((screen.frame.maxY - 1) - menuBarHeight) - frame.height
 
             var originForRightOfScreen: CGPoint {
@@ -152,6 +171,26 @@ final class IceBarPanel: NSPanel {
                 }
 
                 return CGPoint(x: (itemBounds.midX - frame.width / 2).clamped(to: lowerBound ... upperBound), y: defaultOriginY)
+            case .leftAligned:
+                let lowerBound = screen.frame.minX
+                let upperBound = screen.frame.maxX - frame.width
+
+                guard lowerBound <= upperBound else {
+                    return originForRightOfScreen
+                }
+
+                let x = (screen.frame.minX + 24).clamped(to: lowerBound ... upperBound)
+                return CGPoint(x: x, y: defaultOriginY)
+            case .rightAligned:
+                let lowerBound = screen.frame.minX
+                let upperBound = screen.frame.maxX - frame.width
+
+                guard lowerBound <= upperBound else {
+                    return originForRightOfScreen
+                }
+
+                let x = (screen.frame.maxX - frame.width - 24).clamped(to: lowerBound ... upperBound)
+                return CGPoint(x: x, y: defaultOriginY)
             }
         }
 
@@ -170,12 +209,23 @@ final class IceBarPanel: NSPanel {
             return
         }
 
+        let menuBarHeight = screen.getMenuBarHeightEstimate()
+        diagLog.notice("""
+        show: screen=\(screen.displayID) \
+        backingScaleFactor=\(Double(screen.backingScaleFactor)) \
+        hasNotch=\(screen.hasNotch) \
+        menuBarHeight=\(Double(menuBarHeight)) \
+        frame=\(screen.frame.debugDescription) \
+        visibleFrame=\(screen.visibleFrame.debugDescription)
+        """)
+
         hotkeyLocationOverride = triggeredByHotkey && appState.settings.general.iceBarLocationOnHotkey
 
         // IMPORTANT: We must set the navigation state and current section
         // before updating the caches.
         appState.navigationState.isIceBarPresented = true
         currentSection = section
+        lastShowTimestamp = Date()
 
         // Show the panel immediately with whatever cached data we have.
         // The SwiftUI view observes itemManager and imageCache, so it
@@ -208,6 +258,15 @@ final class IceBarPanel: NSPanel {
             guard let appState else { return }
             await appState.itemManager.rehideTemporarilyShownItems(force: true)
             guard !Task.isCancelled else { return }
+            // Settle delay: when the IceBar just opened on a screen that
+            // was previously inactive, the menu bar has moved screens and
+            // NSStatusItem windows (control item chevrons) are still
+            // positioning. Without this delay, cacheItemsIfNeeded can
+            // recache with stale/zero control item bounds, causing
+            // findSection() to misclassify all items as .visible and
+            // leave the hidden section cache empty ("No items…").
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
             await appState.itemManager.cacheItemsIfNeeded()
             guard !Task.isCancelled else { return }
             await appState.imageCache.updateCache()
@@ -235,6 +294,15 @@ final class IceBarPanel: NSPanel {
         currentSection = nil
         appState?.navigationState.isIceBarPresented = false
     }
+
+    /// Resizes the panel to match the hosting view's intrinsic content size.
+    func resizeToContent() {
+        guard let contentView, let screen else { return }
+        let ideal = contentView.intrinsicContentSize
+        guard ideal != .zero, ideal != frame.size else { return }
+        setFrame(NSRect(origin: frame.origin, size: ideal), display: true, animate: false)
+        updateOrigin(for: screen)
+    }
 }
 
 // MARK: - IceBarHostingView
@@ -242,6 +310,11 @@ final class IceBarPanel: NSPanel {
 private final class IceBarHostingView: NSHostingView<IceBarContentView> {
     override var safeAreaInsets: NSEdgeInsets {
         NSEdgeInsets()
+    }
+
+    override func layout() {
+        super.layout()
+        (window as? IceBarPanel)?.resizeToContent()
     }
 
     init(
@@ -301,18 +374,29 @@ private struct IceBarContentView: View {
         appState.appearanceManager.configuration
     }
 
+    private var displaySettings: DisplaySettingsManager {
+        appState.settings.displaySettings
+    }
+
+    private var layout: IceBarLayout {
+        displaySettings.configuration(for: screen.displayID).iceBarLayout
+    }
+
+    private var gridColumns: Int {
+        displaySettings.configuration(for: screen.displayID).gridColumns
+    }
+
+    private var itemSpacing: CGFloat {
+        let offset = displaySettings.configuration(for: screen.displayID).itemSpacingOffset
+        return max(0, CGFloat(offset).rounded())
+    }
+
     private var horizontalPadding: CGFloat {
-        if #available(macOS 26.0, *) {
-            return 3
-        }
-        return configuration.hasRoundedShape ? 7 : 5
+        3
     }
 
     private var verticalPadding: CGFloat {
-        if #available(macOS 26.0, *) {
-            return screen.hasNotch && configuration.hasRoundedShape ? 2 : 0
-        }
-        return screen.hasNotch ? 0 : 2
+        screen.hasNotch && configuration.hasRoundedShape ? 2 : 0
     }
 
     private var contentHeight: CGFloat {
@@ -331,25 +415,82 @@ private struct IceBarContentView: View {
         return menuBarHeight > 0 ? menuBarHeight : nil
     }
 
+    /// The maximum rendered width of any item in the current section.
+    private var maxItemWidth: CGFloat {
+        guard let maxHeight = itemMaxHeight, maxHeight > 0 else { return 0 }
+        let widths = items.compactMap { item -> CGFloat? in
+            guard let cachedImage = imageCache.images[item.tag] else { return nil }
+            let image = cachedImage.nsImage
+            guard image.size.height > 0 else { return image.size.width }
+            let scale = maxHeight / image.size.height
+            return image.size.width * scale
+        }
+        return widths.max() ?? maxHeight
+    }
+
+    /// Per-column maximum widths for the grid layout.
+    private var columnWidths: [CGFloat] {
+        guard let maxHeight = itemMaxHeight, maxHeight > 0 else { return [] }
+        let allItems = items
+        let rows = stride(from: 0, to: allItems.count, by: gridColumns).map { start in
+            Array(allItems[start ..< Swift.min(start + gridColumns, allItems.count)])
+        }
+        return (0 ..< gridColumns).map { col in
+            rows.compactMap { row in
+                guard col < row.count else { return nil }
+                guard let cachedImage = imageCache.images[row[col].tag] else { return nil }
+                let image = cachedImage.nsImage
+                guard image.size.height > 0 else { return image.size.width }
+                let scale = maxHeight / image.size.height
+                return image.size.width * scale
+            }.max() ?? 0
+        }
+    }
+
+    /// Maximum content height for vertical and grid layouts so the panel
+    /// does not extend below the visible screen area.
+    private var maxContentHeight: CGFloat {
+        let menuBarHeight = screen.getMenuBarHeightEstimate()
+        let available = (screen.frame.maxY - menuBarHeight) - screen.visibleFrame.minY
+        let totalPadding: CGFloat = 10 + verticalPadding * 2
+        return max(available - totalPadding, contentHeight)
+    }
+
+    /// Total intrinsic height of all items/rows for the current layout.
+    private var totalContentHeight: CGFloat {
+        switch layout {
+        case .horizontal:
+            return contentHeight
+        case .vertical:
+            return CGFloat(items.count) * contentHeight
+        case .grid:
+            let rowCount = Int(ceil(Double(items.count) / Double(gridColumns)))
+            return CGFloat(rowCount) * contentHeight
+        }
+    }
+
     private var clipShape: some InsettableShape {
         if configuration.hasRoundedShape {
-            RoundedRectangle(cornerRadius: frame.height / 2, style: .circular)
-        } else if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: frame.height / 4, style: .continuous)
+            RoundedRectangle(cornerRadius: contentHeight / 2, style: .circular)
         } else {
-            RoundedRectangle(cornerRadius: frame.height / 5, style: .continuous)
+            RoundedRectangle(cornerRadius: contentHeight / 4, style: .continuous)
         }
     }
 
     var body: some View {
         ZStack {
-            content
-                .frame(height: contentHeight)
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, verticalPadding)
-                .menuBarItemContainer(appState: appState, colorInfo: colorManager.colorInfo)
-                .foregroundStyle(colorManager.colorInfo?.color.brightness ?? 0 > 0.67 ? .black : .white)
-                .clipShape(clipShape)
+            Group {
+                if layout == .horizontal {
+                    content.frame(height: contentHeight)
+                } else {
+                    content.frame(height: min(totalContentHeight, maxContentHeight))
+                }
+            }
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
+            .menuBarItemContainer(appState: appState, colorInfo: colorManager.colorInfo)
+            .foregroundStyle(colorManager.colorInfo?.isBright(for: screen) == true ? .black : .white)
+            .clipShape(clipShape)
 
             if configuration.current.hasBorder {
                 clipShape
@@ -360,7 +501,21 @@ private struct IceBarContentView: View {
         }
         .padding(5)
         .frame(maxWidth: screen.frame.width)
-        .fixedSize()
+        .fixedSize(horizontal: true, vertical: layout == .horizontal)
+        .onAppear {
+            Self.diagLog.notice("""
+            IceBarContentView appeared: \
+            displayID=\(screen.displayID) \
+            backingScaleFactor=\(Double(screen.backingScaleFactor)) \
+            hasNotch=\(screen.hasNotch) \
+            contentHeight=\(Double(contentHeight)) \
+            itemMaxHeight=\(Double(itemMaxHeight ?? 0)) \
+            menuBarHeight=\(Double(screen.getMenuBarHeightEstimate())) \
+            layout=\(String(describing: layout)) \
+            items=\(items.count) \
+            section=\(section.logString)
+            """)
+        }
         .onFrameChange(update: $frame)
         .task(id: section) {
             cacheGracePeriodActive = true
@@ -400,16 +555,12 @@ private struct IceBarContentView: View {
             .onAppear {
                 Self.diagLog.warning("IceBar content: showing 'requires screen recording permissions' — cachedCheckPermissions() returned false")
             }
-        } else if (section == .alwaysHidden || section == .hidden) && items.isEmpty {
+        } else if section == .alwaysHidden || section == .hidden, items.isEmpty {
             HStack {
                 if cacheGracePeriodActive {
                     Text("Loading menu bar items…")
-                    ProgressView()
-                        .controlSize(.small)
                 } else if !loadingTimedOut {
                     Text("No items in this section")
-                    ProgressView()
-                        .controlSize(.small)
                 } else {
                     Text("No items in this section")
                 }
@@ -437,8 +588,6 @@ private struct IceBarContentView: View {
                     .foregroundStyle(.link)
                 } else {
                     Text("Loading menu bar items…")
-                    ProgressView()
-                        .controlSize(.small)
                 }
             }
             .padding(.horizontal, 10)
@@ -452,8 +601,6 @@ private struct IceBarContentView: View {
             HStack {
                 if cacheGracePeriodActive {
                     Text("Loading menu bar items…")
-                    ProgressView()
-                        .controlSize(.small)
                 } else if loadingTimedOut {
                     // Final state: no further automatic retry.
                     Text("Unable to display menu bar items")
@@ -465,9 +612,7 @@ private struct IceBarContentView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.link)
                 } else {
-                    Text("Unable to display menu bar items")
-                    ProgressView()
-                        .controlSize(.small)
+                    Text("Loading menu bar items…")
                 }
             }
             .padding(.horizontal, 10)
@@ -478,29 +623,104 @@ private struct IceBarContentView: View {
                 Self.diagLog.warning("IceBar content: showing '\(self.cacheGracePeriodActive ? "Loading…" : "Unable to display")' for section \(self.section.logString) — imageCache.cacheFailed=true (grace period active: \(self.cacheGracePeriodActive), loadingTimedOut: \(self.loadingTimedOut), cached images count: \(self.imageCache.images.count), items in section: \(self.itemManager.itemCache[self.section].count))")
             }
         } else {
-            ScrollView(.horizontal) {
-                HStack(spacing: 0) {
-                    let isLightBackground = (colorManager.colorInfo?.color.brightness ?? 0) > 0.67
-                    ForEach(items, id: \.windowID) { item in
-                        IceBarItemView(
-                            imageCache: imageCache,
-                            itemManager: itemManager,
-                            menuBarManager: menuBarManager,
-                            item: item,
-                            section: section,
-                            displayID: screen.displayID,
-                            maxHeight: itemMaxHeight,
-                            tooltipDelay: appState.settings.advanced.tooltipDelay,
-                            isLightBackground: isLightBackground
-                        )
+            let isLightBackground = colorManager.colorInfo?.isBright(for: screen) == true
+            switch layout {
+            case .horizontal:
+                ScrollView(.horizontal) {
+                    HStack(spacing: itemSpacing) {
+                        ForEach(items, id: \.windowID) { item in
+                            IceBarItemView(
+                                imageCache: imageCache,
+                                itemManager: itemManager,
+                                menuBarManager: menuBarManager,
+                                item: item,
+                                section: section,
+                                displayID: screen.displayID,
+                                maxHeight: itemMaxHeight,
+                                hasRoundedShape: configuration.hasRoundedShape,
+                                tooltipDelay: appState.settings.advanced.tooltipDelay,
+                                isLightBackground: isLightBackground
+                            )
+                        }
+                    }
+                    .frame(height: contentHeight)
+                }
+                .environment(\.isScrollEnabled, frame.width == screen.frame.width)
+                .defaultScrollAnchor(.trailing)
+                .scrollIndicatorsFlash(trigger: scrollIndicatorsFlashTrigger)
+                .task {
+                    scrollIndicatorsFlashTrigger += 1
+                }
+
+            case .vertical:
+                ScrollView(.vertical) {
+                    VStack(spacing: itemSpacing) {
+                        ForEach(items, id: \.windowID) { item in
+                            IceBarItemView(
+                                imageCache: imageCache,
+                                itemManager: itemManager,
+                                menuBarManager: menuBarManager,
+                                item: item,
+                                section: section,
+                                displayID: screen.displayID,
+                                maxHeight: itemMaxHeight,
+                                hasRoundedShape: configuration.hasRoundedShape,
+                                tooltipDelay: appState.settings.advanced.tooltipDelay,
+                                isLightBackground: isLightBackground
+                            )
+                        }
                     }
                 }
-            }
-            .environment(\.isScrollEnabled, frame.width == screen.frame.width)
-            .defaultScrollAnchor(.trailing)
-            .scrollIndicatorsFlash(trigger: scrollIndicatorsFlashTrigger)
-            .task {
-                scrollIndicatorsFlashTrigger += 1
+                .scrollIndicatorsFlash(trigger: scrollIndicatorsFlashTrigger)
+                .task {
+                    scrollIndicatorsFlashTrigger += 1
+                }
+
+            case .grid:
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        let rows = stride(from: 0, to: items.count, by: gridColumns).map { start in
+                            Array(items[start ..< Swift.min(start + gridColumns, items.count)])
+                        }
+                        ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, rowItems in
+                            HStack(spacing: itemSpacing) {
+                                ForEach(Array(rowItems.enumerated()), id: \.element.windowID) { colIndex, item in
+                                    let itemView = IceBarItemView(
+                                        imageCache: imageCache,
+                                        itemManager: itemManager,
+                                        menuBarManager: menuBarManager,
+                                        item: item,
+                                        section: section,
+                                        displayID: screen.displayID,
+                                        maxHeight: itemMaxHeight,
+                                        hasRoundedShape: configuration.hasRoundedShape,
+                                        tooltipDelay: appState.settings.advanced.tooltipDelay,
+                                        isLightBackground: isLightBackground
+                                    )
+                                    if rows.count > 1 {
+                                        itemView
+                                            .frame(width: columnWidths[colIndex], alignment: .center)
+                                    } else {
+                                        itemView
+                                    }
+                                }
+                                // Only pad the last row when there are multiple rows,
+                                // so partial rows align with the columns above.
+                                if rows.count > 1, rowIndex == rows.count - 1, rowItems.count < gridColumns {
+                                    ForEach(rowItems.count ..< gridColumns, id: \.self) { colIndex in
+                                        Color.clear
+                                            .frame(width: columnWidths[colIndex], height: contentHeight)
+                                    }
+                                }
+                            }
+                            .frame(height: contentHeight)
+                        }
+                    }
+                }
+                .scrollIndicatorsFlash(trigger: scrollIndicatorsFlashTrigger)
+                .task {
+                    scrollIndicatorsFlashTrigger += 1
+                }
             }
         }
     }
@@ -521,8 +741,14 @@ private struct IceBarItemView: View {
     let section: MenuBarSection.Name
     let displayID: CGDirectDisplayID
     let maxHeight: CGFloat?
+    let hasRoundedShape: Bool
     let tooltipDelay: TimeInterval
     let isLightBackground: Bool
+
+    private var pillCornerRadius: CGFloat {
+        guard let h = maxHeight, h > 0 else { return 4 }
+        return hasRoundedShape ? h / 2 : h / 4
+    }
 
     private var leftClickAction: () -> Void {
         return { [weak itemManager, weak menuBarManager] in
@@ -531,17 +757,24 @@ private struct IceBarItemView: View {
             }
             let clickStartTime = Date.now
             IceBarItemView.diagLog.debug("leftClick: user clicked \(item.logString)")
+            let panel = menuBarManager.iceBarPanel
             menuBarManager.section(withName: section)?.hide()
             Task {
-                try await Task.sleep(for: .milliseconds(25))
-                if Bridging.isWindowOnScreen(item.windowID) {
-                    try await itemManager.click(item: item, with: .left)
+                // Wait until the IceBar panel is fully closed before checking
+                // item visibility. Uses KVO on isVisible so we resume as soon
+                // as the panel hides rather than busy-polling.
+                await panel.waitUntilClosed(timeout: .milliseconds(200))
+                if let liveItem = await liveOnScreenItem(matching: item, on: displayID) {
+                    try await itemManager.click(item: liveItem, with: .left)
                     let duration = Date.now.timeIntervalSince(clickStartTime)
                     IceBarItemView.diagLog.debug("leftClick: ✓ completed in \(Int(duration * 1000))ms (on-screen path)")
                 } else {
-                    await itemManager.temporarilyShow(item: item, clickingWith: .left, on: displayID)
+                    // temporarilyShow handles move, click, and fallback click
+                    // internally so that shownInterfaceWindow is always captured
+                    // regardless of which click attempt succeeds.
+                    let result = await itemManager.temporarilyShow(item: item, clickingWith: .left, on: displayID, fastPath: true)
                     let duration = Date.now.timeIntervalSince(clickStartTime)
-                    IceBarItemView.diagLog.debug("leftClick: ✓ completed in \(Int(duration * 1000))ms (temp-show path)")
+                    IceBarItemView.diagLog.debug("leftClick: completed in \(Int(duration * 1000))ms (temp-show path, result=\(result))")
                 }
             }
         }
@@ -552,16 +785,33 @@ private struct IceBarItemView: View {
             guard let itemManager, let menuBarManager else {
                 return
             }
+            let panel = menuBarManager.iceBarPanel
             menuBarManager.section(withName: section)?.hide()
             Task {
-                try await Task.sleep(for: .milliseconds(25))
-                if Bridging.isWindowOnScreen(item.windowID) {
-                    try await itemManager.click(item: item, with: .right)
+                await panel.waitUntilClosed(timeout: .milliseconds(200))
+                if let liveItem = await liveOnScreenItem(matching: item, on: displayID) {
+                    try await itemManager.click(item: liveItem, with: .right)
                 } else {
-                    await itemManager.temporarilyShow(item: item, clickingWith: .right, on: displayID)
+                    let result = await itemManager.temporarilyShow(item: item, clickingWith: .right, on: displayID, fastPath: true)
+                    IceBarItemView.diagLog.debug("rightClick: temp-show result=\(result)")
                 }
             }
         }
+    }
+
+    /// Re-fetches on-screen items and returns the live `MenuBarItem` whose
+    /// tag+PID matches `item`, or `nil` if the item is not currently on-screen.
+    ///
+    /// Matching by tag+PID rather than the cached `windowID` guards against
+    /// CGWindowID recycling after a long system sleep, which would otherwise
+    /// cause `isWindowOnScreen` to return a false positive for an unrelated window.
+    private func liveOnScreenItem(matching item: MenuBarItem, on displayID: CGDirectDisplayID) async -> MenuBarItem? {
+        let liveItems = await MenuBarItem.getMenuBarItems(on: displayID, option: .onScreen)
+        guard let liveItem = liveItems.first(where: {
+            $0.tag.matchesIgnoringWindowID(item.tag) &&
+                ($0.sourcePID ?? $0.ownerPID) == (item.sourcePID ?? item.ownerPID)
+        }) else { return nil }
+        return Bridging.isWindowOnScreen(liveItem.windowID) ? liveItem : nil
     }
 
     private var image: NSImage? {
@@ -598,9 +848,8 @@ private struct IceBarItemView: View {
                 .antialiased(true)
                 .resizable()
                 .frame(width: size.width, height: size.height)
-                .padding(.horizontal, 3)
                 .background {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: pillCornerRadius, style: hasRoundedShape ? .circular : .continuous)
                         .fill((isLightBackground ? Color.black : Color.white).opacity(isHovered ? 0.15 : 0))
                         .padding(.vertical, 3)
                 }
@@ -627,13 +876,13 @@ private struct IceBarItemView: View {
 // MARK: - IceBarItemClickView
 
 private struct IceBarItemClickView: NSViewRepresentable {
-    private final class Represented: NSView {
-        let item: MenuBarItem
-        let tooltipDelay: TimeInterval
+    final class Represented: NSView {
+        var item: MenuBarItem
+        var tooltipDelay: TimeInterval
 
-        let leftClickAction: () -> Void
-        let rightClickAction: () -> Void
-        let onHover: (Bool) -> Void
+        var leftClickAction: () -> Void
+        var rightClickAction: () -> Void
+        var onHover: (Bool) -> Void
 
         private var lastLeftMouseDownDate = Date.now
         private var lastRightMouseDownDate = Date.now
@@ -657,6 +906,21 @@ private struct IceBarItemClickView: NSViewRepresentable {
             self.rightClickAction = rightClickAction
             self.onHover = onHover
             super.init(frame: .zero)
+        }
+
+        func update(
+            item: MenuBarItem,
+            tooltipDelay: TimeInterval,
+            leftClickAction: @escaping () -> Void,
+            rightClickAction: @escaping () -> Void,
+            onHover: @escaping (Bool) -> Void
+        ) {
+            self.item = item
+            self.tooltipDelay = tooltipDelay
+            self.leftClickAction = leftClickAction
+            self.rightClickAction = rightClickAction
+            self.onHover = onHover
+            tooltipController.text = item.displayName
         }
 
         @available(*, unavailable)
@@ -735,7 +999,7 @@ private struct IceBarItemClickView: NSViewRepresentable {
     let rightClickAction: () -> Void
     let onHover: (Bool) -> Void
 
-    func makeNSView(context _: Context) -> NSView {
+    func makeNSView(context _: Context) -> Represented {
         Represented(
             item: item,
             tooltipDelay: tooltipDelay,
@@ -745,5 +1009,15 @@ private struct IceBarItemClickView: NSViewRepresentable {
         )
     }
 
-    func updateNSView(_: NSView, context _: Context) {}
+    func updateNSView(_ nsView: Represented, context _: Context) {
+        // Keep the backing `NSView` in sync with SwiftUI updates; tooltip text,
+        // tooltip timing, and click handlers can all change after creation.
+        nsView.update(
+            item: item,
+            tooltipDelay: tooltipDelay,
+            leftClickAction: leftClickAction,
+            rightClickAction: rightClickAction,
+            onHover: onHover
+        )
+    }
 }

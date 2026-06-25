@@ -8,68 +8,54 @@
 
 import SwiftUI
 
+// MARK: - SettingsView
+
 struct SettingsView: View {
-    @EnvironmentObject var appState: AppState
+    let appState: AppState
     @ObservedObject var navigationState: AppNavigationState
-    @Environment(\.appearsActive) private var appearsActive
-    @Environment(\.sidebarRowSize) private var sidebarRowSize
 
-    private let sidebarPadding: CGFloat = 3
-
-    private var sidebarWidth: CGFloat {
-        if #available(macOS 26.0, *) {
-            switch sidebarRowSize {
-            case .small: 200
-            case .medium: 220
-            case .large: 240
-            @unknown default: 220
-            }
-        } else {
-            switch sidebarRowSize {
-            case .small: 190
-            case .medium: 215
-            case .large: 230
-            @unknown default: 215
-            }
-        }
+    private var allSections: [SettingsNavigationIdentifier] {
+        SettingsNavigationIdentifier.allCases
     }
 
-    private var sidebarItemHeight: CGFloat {
-        switch sidebarRowSize {
-        case .small: 26
-        case .medium: 32
-        case .large: 34
-        @unknown default: 32
-        }
+    private var currentSectionIndex: Int? {
+        allSections.firstIndex(of: navigationState.settingsNavigationIdentifier)
     }
 
-    private var sidebarFontSize: CGFloat {
-        switch sidebarRowSize {
-        case .small: 13
-        case .medium: 15
-        case .large: 16
-        @unknown default: 15
-        }
+    private var isFirstSection: Bool {
+        currentSectionIndex == 0
     }
 
-    private var sidebarTextStyle: some ShapeStyle {
-        appearsActive ? .primary : .secondary
-    }
-
-    private var navigationTitle: LocalizedStringKey {
-        navigationState.settingsNavigationIdentifier.localized
+    private var isLastSection: Bool {
+        currentSectionIndex == allSections.count - 1
     }
 
     var body: some View {
         NavigationSplitView {
             sidebar
         } detail: {
-            detailView
+            settingsPane
+                .id(navigationState.settingsNavigationIdentifier)
         }
-        .navigationTitle(navigationTitle)
+        .navigationTitle(navigationState.settingsNavigationIdentifier.localized)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                ControlGroup {
+                    Button(action: navigateBack) {
+                        Label("Back", systemImage: "chevron.left")
+                    }
+                    .disabled(isFirstSection)
+
+                    Button(action: navigateForward) {
+                        Label("Forward", systemImage: "chevron.right")
+                    }
+                    .disabled(isLastSection)
+                }
+                .controlGroupStyle(.navigation)
+            }
+        }
     }
 
-    @ViewBuilder
     private var sidebar: some View {
         // Use a Binding that wraps the navigation state to ensure updates happen
         // on the main thread and avoid view update warnings.
@@ -77,68 +63,27 @@ struct SettingsView: View {
             get: { navigationState.settingsNavigationIdentifier },
             set: { newValue in
                 if navigationState.settingsNavigationIdentifier != newValue {
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         navigationState.settingsNavigationIdentifier = newValue
                     }
                 }
             }
         )
 
-        List(selection: selection) {
+        return List(selection: selection) {
             Section {
                 ForEach(SettingsNavigationIdentifier.allCases) { identifier in
-                    sidebarItem(for: identifier)
+                    Label {
+                        Text(identifier.localized)
+                    } icon: {
+                        identifier.iconResource.view
+                    }
+                    .tag(identifier)
                 }
-            } header: {
-                Text("\(Constants.displayName)")
-                    .font(.system(size: sidebarFontSize * 2.67, weight: .medium))
-                    .foregroundStyle(sidebarTextStyle)
-                    .padding(.leading, sidebarPadding)
-                    .padding(.bottom, sidebarFontSize)
-            }
-            .collapsible(false)
-        }
-        .scrollDisabled(true)
-        .toolbar(removing: .sidebarToggle)
-        .toolbar {
-            sidebarToolbarSpacer
-        }
-        .navigationSplitViewColumnWidth(sidebarWidth)
-    }
-
-    private func sidebarItem(for identifier: SettingsNavigationIdentifier) -> some View {
-        Label {
-            Text(identifier.localized)
-                .font(.system(size: sidebarFontSize))
-                .foregroundStyle(sidebarTextStyle)
-        } icon: {
-            identifier.iconResource.view
-                .foregroundStyle(sidebarTextStyle)
-                .padding(sidebarPadding)
-        }
-        .frame(height: sidebarItemHeight)
-        .tag(identifier)
-    }
-
-    @ToolbarContentBuilder
-    private var sidebarToolbarSpacer: some ToolbarContent {
-        if #available(macOS 26.0, *) {
-            ToolbarSpacer(.flexible)
-        } else {
-            ToolbarItem {
-                Spacer(minLength: 0)
             }
         }
-    }
-
-    @ViewBuilder
-    private var detailView: some View {
-        if #available(macOS 26.0, *) {
-            settingsPane
-                .scrollEdgeEffectStyle(.hard, for: .top)
-        } else {
-            settingsPane
-        }
+        .listStyle(.sidebar)
+        .navigationSplitViewColumnWidth(ideal: 180, max: 220)
     }
 
     @ViewBuilder
@@ -154,10 +99,24 @@ struct SettingsView: View {
             MenuBarAppearanceSettingsPane(appearanceManager: appState.appearanceManager)
         case .hotkeys:
             HotkeysSettingsPane(settings: appState.settings.hotkeys)
+        case .profiles:
+            ProfileSettingsPane(profileManager: appState.profileManager)
         case .advanced:
             AdvancedSettingsPane(settings: appState.settings.advanced)
+        case .automation:
+            AutomationSettingsPane()
         case .about:
             AboutSettingsPane(updatesManager: appState.updatesManager)
         }
+    }
+
+    private func navigateBack() {
+        guard let index = currentSectionIndex, index > 0 else { return }
+        navigationState.settingsNavigationIdentifier = allSections[index - 1]
+    }
+
+    private func navigateForward() {
+        guard let index = currentSectionIndex, index < allSections.count - 1 else { return }
+        navigationState.settingsNavigationIdentifier = allSections[index + 1]
     }
 }

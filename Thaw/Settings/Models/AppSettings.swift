@@ -20,7 +20,7 @@ final class AppSettings: ObservableObject {
     /// The model for the app's Hotkeys settings.
     let hotkeys = HotkeysSettings()
 
-    /// The model for per-display Ice Bar settings.
+    /// The model for per-display Thaw Bar settings.
     let displaySettings = DisplaySettingsManager()
 
     /// Storage for internal observers.

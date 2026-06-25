@@ -6,7 +6,7 @@
 //  Copyright (Thaw) © 2026 Toni Förster
 //  Licensed under the GNU GPLv3
 
-import CompactSlider
+@preconcurrency import CompactSlider
 import SwiftUI
 
 struct IceSlider<Value: BinaryFloatingPoint, ValueLabel: View>: View {
@@ -55,50 +55,66 @@ struct IceSlider<Value: BinaryFloatingPoint, ValueLabel: View>: View {
         self.valueLabel = Text(valueLabelKey)
     }
 
-    private var borderShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 5, style: .circular)
-        }
-    }
+    @State private var isLabelActive = false
 
     private var height: CGFloat {
-        if #available(macOS 26.0, *) { 24 } else { 22 }
+        24
+    }
+
+    private var borderShape: some InsettableShape {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
     }
 
     var body: some View {
-        CompactSlider(
-            value: $value,
-            in: bounds,
-            step: step ?? 0,
-            handleVisibility: .hovering(width: 0),
-            minHeight: 0,
-            gestureOptions: .default.subtracting([.scrollWheel])
-        ) {
-            HStack(spacing: 4) {
-                valueLabel
-                if showsValue {
-                    Spacer()
-                    Text(value.formatted())
-                        .monospacedDigit()
-                    if let unit {
-                        Text(unit)
+        CompactSlider(value: $value, in: bounds, step: step ?? 0)
+            .frame(height: height)
+            .onContinuousHover { phase in
+                if case .active = phase { isLabelActive = true } else { isLabelActive = false }
+            }
+            .overlay {
+                HStack(spacing: 4) {
+                    valueLabel
+                        .scaleEffect(x: reversed ? -1 : 1, y: 1)
+                    if showsValue {
+                        Spacer()
+                        if reversed {
+                            if let unit {
+                                Text(unit)
+                                    .scaleEffect(x: -1, y: 1)
+                            }
+                            Text(value.formatted())
+                                .monospacedDigit()
+                                .scaleEffect(x: -1, y: 1)
+                        } else {
+                            Text(value.formatted())
+                                .monospacedDigit()
+                            if let unit {
+                                Text(unit)
+                            }
+                        }
                     }
                 }
+                .padding(.horizontal, 8)
+                .frame(height: height)
+                .opacity(isLabelActive ? 0.65 : 0.45)
+                .animation(.easeInOut(duration: 0.15), value: isLabelActive)
+                .allowsHitTesting(false)
             }
-            .padding(.horizontal, 8)
-            .opacity(0.5)
-            .frame(height: height)
-            .rotationEffect(.degrees(reversed ? 180 : 0))
-        }
-        .compactSliderDisabledHapticFeedback(true)
-        .compactSliderSecondaryColor(
-            progressColor: .accentColor.opacity(0.5),
-            focusedProgressColor: .accentColor.opacity(0.75)
-        )
-        .rotationEffect(.degrees(reversed ? 180 : 0))
-        .clipShape(borderShape)
-        .contentShape([.interaction, .focusEffect], borderShape)
+            .glassEffect(.regular, in: borderShape)
+            .overlay(
+                borderShape.strokeBorder(.separator, lineWidth: 0.5)
+            )
+            .compactSliderHandleStyle(.hidden())
+            .compactSliderScale(alignment: .top, lineLength: 6)
+            .compactSliderOptionsByAdding(.tapToSlide, .snapToSteps)
+            .compactSliderProgress { configuration in
+                Rectangle().fill(
+                    configuration.focusState.isFocused
+                        ? Color.accentColor : Color.accentColor.opacity(0.8)
+                )
+            }
+            .scaleEffect(x: reversed ? -1 : 1, y: 1)
+            .clipShape(borderShape)
+            .contentShape([.interaction, .focusEffect], borderShape)
     }
 }

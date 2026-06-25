@@ -88,11 +88,7 @@ private struct IceGradientPickerRoot: View {
     private let handleWidth: CGFloat = 10
 
     private var borderShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 5, style: .circular)
-        }
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
     }
 
     var body: some View {
@@ -180,9 +176,7 @@ private struct IceGradientPickerRoot: View {
             gradient.stops.append(.black(location: location))
         }
         if select, let index = gradient.stops.indices.last {
-            DispatchQueue.main.async {
-                self.selection = index
-            }
+            selection = index
         }
     }
 
@@ -330,11 +324,7 @@ private struct IceGradientPickerHandle: View {
     }
 
     private var borderShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            Capsule(style: .continuous)
-        } else {
-            Capsule(style: .circular)
-        }
+        Capsule(style: .continuous)
     }
 
     var body: some View {
@@ -363,7 +353,10 @@ private struct IceGradientPickerHandle: View {
         if let stop {
             borderShape
                 .fill(Color(cgColor: stop.color))
-                .strokeBorder(isSelected ? AnyShapeStyle(.clear) : AnyShapeStyle(.tertiary))
+                .glassEffect(.regular.interactive(), in: borderShape)
+                .overlay(
+                    borderShape.strokeBorder(isSelected ? AnyShapeStyle(.white.opacity(0.5)) : AnyShapeStyle(.separator), lineWidth: 1.0)
+                )
                 .background(
                     isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear),
                     in: borderShape.inset(by: -2)

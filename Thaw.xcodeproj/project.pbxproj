@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 90;
+	objectVersion = 100;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -24,6 +24,13 @@
 			remoteGlobalIDString = 7188A6822E27F9ED008F131D;
 			remoteInfo = MenuBarItemService;
 		};
+		E2TESTS0012F2C000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 716683222A767E6A006ABF84 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 716683292A767E6A006ABF84;
+			remoteInfo = Thaw;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -41,6 +48,7 @@
 /* Begin PBXFileReference section */
 		7166832A2A767E6A006ABF84 /* Thaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Thaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7188A6832E27F9ED008F131D /* MenuBarItemService.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = MenuBarItemService.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
+		E2TESTS0012F2C000000001 /* ThawTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ThawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -82,6 +90,11 @@
 			path = Thaw;
 			sourceTree = "<group>";
 		};
+		E2TESTS0012F2C000000003 /* ThawTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ThawTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -101,6 +114,11 @@
 				7168EE532E281CBC00FF9830 /* AXSwift in Frameworks */,
 			);
 		};
+		E2TESTS0012F2C000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -110,6 +128,7 @@
 				7188A69E2E280BB4008F131D /* Shared */,
 				71BDFBE12C978E2A00EF145F /* Thaw */,
 				7188A6842E27F9ED008F131D /* MenuBarItemService */,
+				E2TESTS0012F2C000000003 /* ThawTests */,
 				7166832B2A767E6A006ABF84 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -119,6 +138,7 @@
 			children = (
 				7166832A2A767E6A006ABF84 /* Thaw.app */,
 				7188A6832E27F9ED008F131D /* MenuBarItemService.xpc */,
+				E2TESTS0012F2C000000001 /* ThawTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -135,6 +155,7 @@
 				716683282A767E6A006ABF84 /* Resources */,
 				1720D48F2BB9B60500A7AC63 /* SwiftLint */,
 				7188A68D2E27F9ED008F131D /* Embed XPC Services */,
+				170AD05A2BB9B60500A7AC63 /* Stamp Git SHA */,
 			);
 			buildRules = (
 			);
@@ -164,6 +185,7 @@
 				7188A67F2E27F9ED008F131D /* Sources */,
 				7188A6802E27F9ED008F131D /* Frameworks */,
 				7188A6812E27F9ED008F131D /* Resources */,
+				170AD05B2BB9B60500A7AC64 /* Stamp Git SHA */,
 			);
 			buildRules = (
 			);
@@ -178,6 +200,27 @@
 			productName = MenuBarItemService;
 			productReference = 7188A6832E27F9ED008F131D /* MenuBarItemService.xpc */;
 			productType = "com.apple.product-type.xpc-service";
+		};
+		E2TESTS0012F2C000000007 /* ThawTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E2TESTS0012F2C00000000D /* Build configuration list for PBXNativeTarget "ThawTests" */;
+			buildPhases = (
+				E2TESTS0012F2C000000005 /* Sources */,
+				E2TESTS0012F2C000000004 /* Frameworks */,
+				E2TESTS0012F2C000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E2TESTS0012F2C000000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E2TESTS0012F2C000000003 /* ThawTests */,
+			);
+			name = ThawTests;
+			productName = ThawTests;
+			productReference = E2TESTS0012F2C000000001 /* ThawTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -194,6 +237,10 @@
 					};
 					7188A6822E27F9ED008F131D = {
 						CreatedOnToolsVersion = 26.0;
+					};
+					E2TESTS0012F2C000000007 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 716683292A767E6A006ABF84;
 					};
 				};
 			};
@@ -217,6 +264,10 @@
 				ru,
 				"pt-BR",
 				ja,
+				cs,
+				pl,
+				uk,
+				vi,
 				Base,
 			);
 			mainGroup = 716683212A767E6A006ABF84;
@@ -227,13 +278,14 @@
 				17F71BB32B880B4500905CBA /* XCRemoteSwiftPackageReference "CompactSlider" */,
 				7127A9FB2C4881BC00D99DEF /* XCRemoteSwiftPackageReference "Ifrit" */,
 			);
-			preferredProjectObjectVersion = 90;
+			preferredProjectObjectVersion = 100;
 			productRefGroup = 7166832B2A767E6A006ABF84 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				716683292A767E6A006ABF84 /* Thaw */,
 				7188A6822E27F9ED008F131D /* MenuBarItemService */,
+				E2TESTS0012F2C000000007 /* ThawTests */,
 			);
 		};
 /* End PBXProject section */
@@ -249,9 +301,74 @@
 			files = (
 			);
 		};
+		E2TESTS0012F2C000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		170AD05A2BB9B60500A7AC63 /* Stamp Git SHA */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			name = "Stamp Git SHA";
+			shellPath = /bin/sh;
+			shellScript = (
+				"set -eu",
+				"",
+				"if SHA=$(git -C \"${SRCROOT}\" rev-parse --short HEAD 2>/dev/null); then",
+				"    if ! git -C \"${SRCROOT}\" diff --quiet 2>/dev/null \\",
+				"       || ! git -C \"${SRCROOT}\" diff --cached --quiet 2>/dev/null; then",
+				"        SHA=\"${SHA}-dirty\"",
+				"    fi",
+				"else",
+				"    SHA=\"unknown\"",
+				"fi",
+				"",
+				"PLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"",
+				"if [ ! -f \"$PLIST\" ]; then",
+				"    echo \"warning: stamp-git-sha: plist not found at $PLIST\"",
+				"    exit 0",
+				"fi",
+				"",
+				"/usr/libexec/PlistBuddy -c \"Set :GitCommitSHA ${SHA}\" \"$PLIST\" 2>/dev/null \\",
+				"    || /usr/libexec/PlistBuddy -c \"Add :GitCommitSHA string ${SHA}\" \"$PLIST\"",
+				"",
+				"echo \"stamp-git-sha: stamped ${SHA} into ${PLIST}\"",
+				"",
+			);
+		};
+		170AD05B2BB9B60500A7AC64 /* Stamp Git SHA */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			name = "Stamp Git SHA";
+			shellPath = /bin/sh;
+			shellScript = (
+				"set -eu",
+				"",
+				"if SHA=$(git -C \"${SRCROOT}\" rev-parse --short HEAD 2>/dev/null); then",
+				"    if ! git -C \"${SRCROOT}\" diff --quiet 2>/dev/null \\",
+				"       || ! git -C \"${SRCROOT}\" diff --cached --quiet 2>/dev/null; then",
+				"        SHA=\"${SHA}-dirty\"",
+				"    fi",
+				"else",
+				"    SHA=\"unknown\"",
+				"fi",
+				"",
+				"PLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"",
+				"if [ ! -f \"$PLIST\" ]; then",
+				"    echo \"warning: stamp-git-sha: plist not found at $PLIST\"",
+				"    exit 0",
+				"fi",
+				"",
+				"/usr/libexec/PlistBuddy -c \"Set :GitCommitSHA ${SHA}\" \"$PLIST\" 2>/dev/null \\",
+				"    || /usr/libexec/PlistBuddy -c \"Add :GitCommitSHA string ${SHA}\" \"$PLIST\"",
+				"",
+				"echo \"stamp-git-sha: stamped ${SHA} into ${PLIST}\"",
+				"",
+			);
+		};
 		1720D48F2BB9B60500A7AC63 /* SwiftLint */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -283,6 +400,11 @@
 			files = (
 			);
 		};
+		E2TESTS0012F2C000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -290,6 +412,11 @@
 			isa = PBXTargetDependency;
 			target = 7188A6822E27F9ED008F131D /* MenuBarItemService */;
 			targetProxy = 7188A68A2E27F9ED008F131D /* PBXContainerItemProxy */;
+		};
+		E2TESTS0012F2C000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 716683292A767E6A006ABF84 /* Thaw */;
+			targetProxy = E2TESTS0012F2C000000002 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -350,7 +477,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Toni Förster\nCopyright © 2023–2025 Jordan Baird (Ice) ";
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -412,7 +539,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Toni Förster\nCopyright © 2023–2025 Jordan Baird (Ice) ";
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
@@ -428,11 +555,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = "";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 44;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = 456BPWQ6U5;
@@ -450,11 +578,13 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.1.99-beta.11";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = "2.0.0-beta.13";
 				PRODUCT_BUNDLE_IDENTIFIER = com.stonerl.Thaw;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -463,11 +593,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = "";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 44;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = 456BPWQ6U5;
@@ -485,11 +616,13 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.1.99-beta.11";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = "2.0.0-beta.13";
 				PRODUCT_BUNDLE_IDENTIFIER = com.stonerl.Thaw;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -498,26 +631,28 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 44;
 				DEVELOPMENT_TEAM = 456BPWQ6U5;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MenuBarItemService/Resources/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Toni Förster\nCopyright © 2023–2025 Jordan Baird (Ice) ";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = "1.1.99-beta.11";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = "2.0.0-beta.13";
 				PRODUCT_BUNDLE_IDENTIFIER = com.stonerl.Thaw.MenuBarItemService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -526,25 +661,67 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 44;
 				DEVELOPMENT_TEAM = 456BPWQ6U5;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MenuBarItemService/Resources/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Toni Förster\nCopyright © 2023–2025 Jordan Baird (Ice) ";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = "1.1.99-beta.11";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = "2.0.0-beta.13";
 				PRODUCT_BUNDLE_IDENTIFIER = com.stonerl.Thaw.MenuBarItemService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		E2TESTS0012F2C000000009 /* Debug configuration for PBXNativeTarget "ThawTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 31;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 456BPWQ6U5;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = "1.3.0-beta.1";
+				PRODUCT_BUNDLE_IDENTIFIER = com.stonerl.ThawTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Thaw.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Thaw";
+			};
+			name = Debug;
+		};
+		E2TESTS0012F2C00000000A /* Release configuration for PBXNativeTarget "ThawTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 31;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 456BPWQ6U5;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = "1.3.0-beta.1";
+				PRODUCT_BUNDLE_IDENTIFIER = com.stonerl.ThawTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Thaw.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Thaw";
 			};
 			name = Release;
 		};
@@ -575,6 +752,14 @@
 			);
 			defaultConfigurationName = Release;
 		};
+		E2TESTS0012F2C00000000D /* Build configuration list for PBXNativeTarget "ThawTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E2TESTS0012F2C000000009 /* Debug configuration for PBXNativeTarget "ThawTests" */,
+				E2TESTS0012F2C00000000A /* Release configuration for PBXNativeTarget "ThawTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -596,7 +781,7 @@
 		};
 		1787C4252B16890B002F50DF /* XCRemoteSwiftPackageReference "AXSwift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/tmandry/AXSwift";
+			repositoryURL = "https://github.com/stonerl/AXSwift";
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.3.2;
@@ -607,7 +792,7 @@
 			repositoryURL = "https://github.com/buh/CompactSlider";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.1.5;
+				minimumVersion = 2.1.0;
 			};
 		};
 		7127A9FB2C4881BC00D99DEF /* XCRemoteSwiftPackageReference "Ifrit" */ = {

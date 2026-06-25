@@ -206,7 +206,7 @@ private struct HotkeyRecorderButtonStyle: ButtonStyle {
     var isHighlighted: Bool
 
     private var radii: RectangleCornerRadii {
-        let r: CGFloat = if #available(macOS 26.0, *) { 6 } else { 5 }
+        let r: CGFloat = 6
         return switch segment {
         case .leading: RectangleCornerRadii(topLeading: r, bottomLeading: r)
         case .trailing: RectangleCornerRadii(bottomTrailing: r, topTrailing: r)
@@ -214,23 +214,19 @@ private struct HotkeyRecorderButtonStyle: ButtonStyle {
     }
 
     private var borderShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            UnevenRoundedRectangle(cornerRadii: radii, style: .continuous)
-        } else {
-            UnevenRoundedRectangle(cornerRadii: radii, style: .circular)
-        }
+        UnevenRoundedRectangle(cornerRadii: radii, style: .continuous)
     }
 
     func makeBody(configuration: Configuration) -> some View {
         let isProminent = configuration.isPressed != isHighlighted
         borderShape
             .fill(isProminent ? .tertiary : .quaternary)
-            .opacity(isProminent ? 0.5 : 0.75)
             .overlay {
                 configuration.label
                     .lineLimit(1)
                     .foregroundStyle(.primary)
             }
+            .glassEffect(.regular.interactive(), in: borderShape)
             .contentShape([.interaction, .focusEffect], borderShape)
     }
 }

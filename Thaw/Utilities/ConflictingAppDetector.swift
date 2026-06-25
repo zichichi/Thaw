@@ -17,6 +17,8 @@ enum ConflictingAppDetector {
         "com.dwarvesv.minimalbar": "Hidden Bar",
         "com.macpaw.CleanMyMac-setapp": "CleanMyMac Menu",
         "com.gaosun.BarTender": "iBar",
+        "com.HyperartFlow.Barbee": "Barbee",
+        "com.sanebar.app": "SaneBar",
     ]
 
     /// Returns the display names of any conflicting menu bar managers currently running.
@@ -52,11 +54,11 @@ enum ConflictingAppDetector {
             localized: """
             \(appList) is currently running. Running multiple menu bar \
             managers at the same time can cause display issues and unexpected \
-            behavior. Consider quitting \(appList) before using Thaw.
+            behavior. Consider quitting \(appList) before using \(Constants.displayName).
             """
         )
         alert.addButton(withTitle: String(localized: "Continue Anyway"))
-        alert.addButton(withTitle: String(localized: "Quit Thaw"))
+        alert.addButton(withTitle: String(localized: "Quit \(Constants.displayName)"))
 
         let response = alert.runModal()
         if response == .alertSecondButtonReturn {

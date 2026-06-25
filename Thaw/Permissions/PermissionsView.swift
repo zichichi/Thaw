@@ -155,7 +155,7 @@ struct PermissionsView: View {
                     VStack(alignment: .leading) {
                         ForEach(permission.details, id: \.self) { detail in
                             HStack {
-                                Text("•").bold()
+                                Text(verbatim: "•").bold()
                                 Text(detail).fontWeight(.medium)
                             }
                         }
@@ -227,9 +227,12 @@ struct PermissionsView: View {
                 }
 
                 if iceImportResult?.success == true {
-                    Button("Imported") {}
-                        .foregroundStyle(.green)
-                        .disabled(true)
+                    // Disabled status label — no action needed.
+                    Button("Imported") {
+                        // Intentionally empty: this is a disabled status-only button after a successful import.
+                    }
+                    .foregroundStyle(.green)
+                    .disabled(true)
                 } else {
                     Button("Import Settings") {
                         importIceSettings()

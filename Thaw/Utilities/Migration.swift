@@ -28,8 +28,8 @@ extension MigrationManager {
 
         do {
             try performAll(blocks: [
-                migrate0_8_0,
-                migrate0_10_0,
+                migrateForRelease080,
+                migrateForRelease0100,
             ])
         } catch let error as MigrationError {
             results.append(.failureAndLogError(error))
@@ -38,10 +38,10 @@ extension MigrationManager {
         }
 
         results += [
-            migrate0_10_1(),
-            migrate0_11_10(),
-            migrate0_11_13(),
-            migrate0_11_13_1(),
+            migrateForRelease0101(),
+            migrateForRelease01110(),
+            migrateForRelease01113(),
+            migrateForRelease011131(),
             migratePerDisplayIceBar(),
         ]
 
@@ -63,14 +63,14 @@ extension MigrationManager {
 extension MigrationManager {
     /// Performs all migrations for the `0.8.0` release, catching any thrown
     /// errors and rethrowing them as a combined error.
-    private func migrate0_8_0() throws {
+    private func migrateForRelease080() throws {
         guard !Defaults.bool(forKey: .hasMigrated0_8_0) else {
             return
         }
         try performAll(blocks: [
-            migrateHotkeys0_8_0,
-            migrateControlItems0_8_0,
-            migrateSections0_8_0,
+            migrateHotkeysForRelease080,
+            migrateControlItemsForRelease080,
+            migrateSectionsForRelease080,
         ])
         Defaults.set(true, forKey: .hasMigrated0_8_0)
         diagLog.info("Successfully migrated to 0.8.0 settings")
@@ -81,7 +81,7 @@ extension MigrationManager {
     /// Migrates the user's saved hotkeys from the old method of storing
     /// them in their corresponding menu bar sections to the new method
     /// of storing them as stand-alone data in the `0.8.0` release.
-    private func migrateHotkeys0_8_0() throws {
+    private func migrateHotkeysForRelease080() throws {
         let sectionsArray: [[String: Any]]
         do {
             guard let array = try getMenuBarSectionArray() else {
@@ -109,14 +109,14 @@ extension MigrationManager {
                 modifiers: Modifiers(rawValue: modifiers)
             )
             let hotkeysSettings = appState.settings.hotkeys
-            if case .hidden = name {
-                if let hotkey = hotkeysSettings.hotkey(withAction: .toggleHiddenSection) {
-                    hotkey.keyCombination = keyCombination
-                }
-            } else if case .alwaysHidden = name {
-                if let hotkey = hotkeysSettings.hotkey(withAction: .toggleAlwaysHiddenSection) {
-                    hotkey.keyCombination = keyCombination
-                }
+            if case .hidden = name,
+               let hotkey = hotkeysSettings.hotkey(withAction: .toggleHiddenSection)
+            {
+                hotkey.keyCombination = keyCombination
+            } else if case .alwaysHidden = name,
+                      let hotkey = hotkeysSettings.hotkey(withAction: .toggleAlwaysHiddenSection)
+            {
+                hotkey.keyCombination = keyCombination
             }
         }
     }
@@ -125,7 +125,7 @@ extension MigrationManager {
 
     /// Migrates the control items from their old serialized representations
     /// to their new representations in the `0.8.0` release.
-    private func migrateControlItems0_8_0() throws {
+    private func migrateControlItemsForRelease080() throws {
         let sectionsArray: [[String: Any]]
         do {
             guard let array = try getMenuBarSectionArray() else {
@@ -180,7 +180,7 @@ extension MigrationManager {
 
     /// Migrates away from storing the menu bar sections in UserDefaults
     /// for the `0.8.0` release.
-    private func migrateSections0_8_0() {
+    private func migrateSectionsForRelease080() {
         Defaults.set(nil, forKey: .sections)
     }
 }
@@ -189,18 +189,18 @@ extension MigrationManager {
 
 extension MigrationManager {
     /// Performs all migrations for the `0.10.0` release.
-    private func migrate0_10_0() {
+    private func migrateForRelease0100() {
         guard !Defaults.bool(forKey: .hasMigrated0_10_0) else {
             return
         }
 
-        migrateControlItems0_10_0()
+        migrateControlItemsForRelease0100()
 
         Defaults.set(true, forKey: .hasMigrated0_10_0)
         diagLog.info("Successfully migrated to 0.10.0 settings")
     }
 
-    private func migrateControlItems0_10_0() {
+    private func migrateControlItemsForRelease0100() {
         for identifier in ControlItem.Identifier.allCases {
             ControlItemDefaults.migrate(
                 key: .preferredPosition,
@@ -215,11 +215,11 @@ extension MigrationManager {
 
 extension MigrationManager {
     /// Performs all migrations for the `0.10.1` release.
-    private func migrate0_10_1() -> MigrationResult {
+    private func migrateForRelease0101() -> MigrationResult {
         guard !Defaults.bool(forKey: .hasMigrated0_10_1) else {
             return .success
         }
-        let result = migrateControlItems0_10_1()
+        let result = migrateControlItemsForRelease0101()
         switch result {
         case .success, .successButShowAlert:
             Defaults.set(true, forKey: .hasMigrated0_10_1)
@@ -230,7 +230,7 @@ extension MigrationManager {
         return result
     }
 
-    private func migrateControlItems0_10_1() -> MigrationResult {
+    private func migrateControlItemsForRelease0101() -> MigrationResult {
         var needsResetPreferredPositions = false
 
         for identifier in ControlItem.Identifier.allCases {
@@ -262,11 +262,11 @@ extension MigrationManager {
 
 extension MigrationManager {
     /// Performs all migrations for the `0.11.10` release.
-    private func migrate0_11_10() -> MigrationResult {
+    private func migrateForRelease01110() -> MigrationResult {
         guard !Defaults.bool(forKey: .hasMigrated0_11_10) else {
             return .success
         }
-        let result = migrateAppearanceConfiguration0_11_10()
+        let result = migrateAppearanceConfigurationForRelease01110()
         switch result {
         case .success, .successButShowAlert:
             Defaults.set(true, forKey: .hasMigrated0_11_10)
@@ -277,7 +277,7 @@ extension MigrationManager {
         return result
     }
 
-    private func migrateAppearanceConfiguration0_11_10() -> MigrationResult {
+    private func migrateAppearanceConfigurationForRelease01110() -> MigrationResult {
         guard let oldData = Defaults.data(forKey: .menuBarAppearanceConfiguration) else {
             if Defaults.object(forKey: .menuBarAppearanceConfiguration) != nil {
                 diagLog.warning("Previous menu bar appearance data is corrupted")
@@ -296,7 +296,18 @@ extension MigrationManager {
                     borderWidth: oldConfiguration.borderWidth,
                     tintKind: oldConfiguration.tintKind,
                     tintColor: oldConfiguration.tintColor,
-                    tintGradient: oldConfiguration.tintGradient
+                    tintGradient: oldConfiguration.tintGradient,
+                    tintOpacity: MenuBarAppearancePartialConfiguration.defaultConfiguration.tintOpacity,
+                    backgroundKind: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundKind,
+                    backgroundColor: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundColor,
+                    backgroundGradient: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundGradient,
+                    backgroundOpacity: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundOpacity,
+                    backgroundHasShadow: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundHasShadow,
+                    backgroundHasBorder: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundHasBorder,
+                    backgroundBorderColor: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundBorderColor,
+                    backgroundBorderWidth: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundBorderWidth,
+                    backgroundGlassStyle: MenuBarAppearancePartialConfiguration.defaultConfiguration.backgroundGlassStyle,
+                    tintGlassStyle: MenuBarAppearancePartialConfiguration.defaultConfiguration.tintGlassStyle
                 )
                 configuration.lightModeConfiguration = partialConfiguration
                 configuration.darkModeConfiguration = partialConfiguration
@@ -319,13 +330,13 @@ extension MigrationManager {
 
 extension MigrationManager {
     /// Performs all migrations for the `0.11.13` release.
-    private func migrate0_11_13() -> MigrationResult {
+    private func migrateForRelease01113() -> MigrationResult {
         guard !Defaults.bool(forKey: .hasMigrated0_11_13) else {
             return .success
         }
 
-        migrateAppearanceConfiguration0_11_13()
-        migrateSectionDividers0_11_13()
+        migrateAppearanceConfigurationForRelease01113()
+        migrateSectionDividersForRelease01113()
 
         Defaults.set(true, forKey: .hasMigrated0_11_13)
         diagLog.info("Successfully migrated to 0.11.13 settings")
@@ -333,11 +344,11 @@ extension MigrationManager {
         return .success
     }
 
-    private func migrateAppearanceConfiguration0_11_13() {
+    private func migrateAppearanceConfigurationForRelease01113() {
         Defaults.removeObject(forKey: .menuBarAppearanceConfiguration)
     }
 
-    private func migrateSectionDividers0_11_13() {
+    private func migrateSectionDividersForRelease01113() {
         let style = if Defaults.bool(forKey: .showSectionDividers) {
             SectionDividerStyle.chevron
         } else {
@@ -352,12 +363,12 @@ extension MigrationManager {
 
 extension MigrationManager {
     /// Performs all migrations for the `0.11.13.1` release.
-    private func migrate0_11_13_1() -> MigrationResult {
+    private func migrateForRelease011131() -> MigrationResult {
         guard !Defaults.bool(forKey: .hasMigrated0_11_13_1) else {
             return .success
         }
 
-        migrateControlItems0_11_13_1()
+        migrateControlItemsForRelease011131()
 
         Defaults.set(true, forKey: .hasMigrated0_11_13_1)
         diagLog.info("Successfully migrated to 0.11.13.1 settings")
@@ -365,7 +376,7 @@ extension MigrationManager {
         return .success
     }
 
-    private func migrateControlItems0_11_13_1() {
+    private func migrateControlItemsForRelease011131() {
         for identifier in ControlItem.Identifier.allCases {
             ControlItemDefaults.migrate(
                 key: .preferredPosition,
@@ -386,10 +397,10 @@ extension MigrationManager {
     }
 }
 
-// MARK: - Migrate Per-Display Ice Bar
+// MARK: - Migrate Per-Display Thaw Bar
 
 extension MigrationManager {
-    /// Migrates legacy global Ice Bar settings to per-display configurations.
+    /// Migrates legacy global Thaw Bar settings to per-display configurations.
     private func migratePerDisplayIceBar() -> MigrationResult {
         guard !Defaults.bool(forKey: .hasMigratedPerDisplayIceBar) else {
             return .success
@@ -400,10 +411,10 @@ extension MigrationManager {
         let iceBarLocationRaw = Defaults.integer(forKey: .iceBarLocation)
         let iceBarLocation = IceBarLocation(rawValue: iceBarLocationRaw) ?? .dynamic
 
-        // Only create per-display configs if the user had Ice Bar enabled.
+        // Only create per-display configs if the user had Thaw Bar enabled.
         guard useIceBar else {
             Defaults.set(true, forKey: .hasMigratedPerDisplayIceBar)
-            diagLog.info("Per-display Ice Bar migration: Ice Bar was disabled, nothing to migrate")
+            diagLog.info("Per-display Thaw Bar migration: Thaw Bar was disabled, nothing to migrate")
             return .success
         }
 
@@ -416,7 +427,7 @@ extension MigrationManager {
             let data = try encoder.encode(configs)
             Defaults.set(data, forKey: .displayIceBarConfigurations)
             Defaults.set(true, forKey: .hasMigratedPerDisplayIceBar)
-            diagLog.info("Per-display Ice Bar migration: migrated \(configs.count) display(s)")
+            diagLog.info("Per-display Thaw Bar migration: migrated \(configs.count) display(s)")
         } catch {
             return .failureAndLogError(.perDisplayIceBarMigrationError(error))
         }
@@ -453,7 +464,7 @@ extension MigrationManager {
         }
         let object = try JSONSerialization.jsonObject(with: data)
         guard let array = object as? [[String: Any]] else {
-            throw MigrationError.invalidMenuBarSectionsJSONObject(object)
+            throw MigrationError.invalidMenuBarSectionsJSONObject(String(describing: object))
         }
         return array
     }
@@ -473,7 +484,7 @@ extension MigrationManager {
 
 extension MigrationManager {
     enum MigrationError: Error, CustomStringConvertible {
-        case invalidMenuBarSectionsJSONObject(Any)
+        case invalidMenuBarSectionsJSONObject(String)
         case hotkeyMigrationError(any Error)
         case controlItemMigrationError(any Error)
         case appearanceConfigurationMigrationError(any Error)
@@ -491,7 +502,7 @@ extension MigrationManager {
             case let .appearanceConfigurationMigrationError(error):
                 "Error migrating menu bar appearance configuration: \(error)"
             case let .perDisplayIceBarMigrationError(error):
-                "Error migrating per-display Ice Bar configuration: \(error)"
+                "Error migrating per-display Thaw Bar configuration: \(error)"
             case let .combinedError(errors):
                 "The following errors occurred: \(errors)"
             }

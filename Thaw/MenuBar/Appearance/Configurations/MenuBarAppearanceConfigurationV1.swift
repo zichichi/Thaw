@@ -28,6 +28,7 @@ struct MenuBarAppearanceConfigurationV1: Hashable {
         case .noShape: false
         case .full: fullShapeInfo.hasRoundedShape
         case .split: splitShapeInfo.hasRoundedShape
+        case .notch: false
         }
     }
 
@@ -106,8 +107,8 @@ extension MenuBarAppearanceConfigurationV1 {
         borderColor: .black,
         borderWidth: 1,
         shapeKind: .noShape,
-        fullShapeInfo: .default,
-        splitShapeInfo: .default,
+        fullShapeInfo: .defaultValue,
+        splitShapeInfo: .defaultValue,
         tintKind: .noTint,
         tintColor: .black,
         tintGradient: .defaultMenuBarTint

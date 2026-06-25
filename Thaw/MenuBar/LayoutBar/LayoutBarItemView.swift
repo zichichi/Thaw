@@ -12,7 +12,19 @@ import Combine
 // MARK: - LayoutBarItemView
 
 /// A view that displays an image in a menu bar layout view.
-final class LayoutBarItemView: NSView {
+final class LayoutBarItemView: LayoutBarArrangedView {
+    private enum Metrics {
+        static let minWidth: CGFloat = 14
+        static let maxWidth: CGFloat = 240
+        static let minHeight: CGFloat = 18
+        static let placeholderCornerRadius: CGFloat = 6
+        static let placeholderHorizontalInset: CGFloat = 2
+        static let placeholderVerticalInset: CGFloat = 2
+        static let iconInset: CGFloat = 2
+        static let fallbackSymbolPointSize: CGFloat = 11
+        static let unresponsiveBadgeWidth: CGFloat = 15
+    }
+
     private weak var appState: AppState?
 
     private var cancellables = Set<AnyCancellable>()
@@ -22,59 +34,38 @@ final class LayoutBarItemView: NSView {
 
     private lazy var tooltipController = CustomTooltipController(text: item.displayName, view: self)
     private var tooltipTrackingArea: NSTrackingArea?
-
-    /// Temporary information that the item view retains when it is moved outside
-    /// of a layout view.
-    ///
-    /// When the item view is dragged outside of a layout view, this property is set
-    /// to hold the layout view's container view, as well as the index of the item
-    /// view in relation to the container's other items. Upon being inserted into a
-    /// new layout view, these values are removed. If the item is dropped outside of
-    /// a layout view, these values are used to reinsert the item view in its original
-    /// layout view.
-    var oldContainerInfo: (container: LayoutBarContainer, index: Int)?
-
-    /// A Boolean value that indicates whether the item view is currently inside a container.
-    var hasContainer = false
+    private let placeholderImage: NSImage?
 
     /// The image displayed inside the view.
     private var cachedImage: MenuBarItemImageCache.CapturedImage? {
         didSet {
-            if let image = cachedImage {
-                setFrameSize(image.scaledSize)
-            } else {
-                setFrameSize(.zero)
+            let previousSize = preferredSize(for: oldValue)
+            let newSize = preferredSize(for: cachedImage)
+            setFrameSize(newSize)
+            if previousSize != newSize {
+                (superview as? LayoutBarContainer)?.itemPreferredSizeDidChange(self)
             }
             needsDisplay = true
         }
     }
 
-    /// A Boolean value that indicates whether the item view is a dragging placeholder.
-    ///
-    /// If this value is `true`, the item view does not draw its image.
-    var isDraggingPlaceholder = false {
-        didSet {
-            needsDisplay = true
-        }
-    }
-
-    /// A Boolean value that indicates whether the view is enabled.
-    var isEnabled = true {
-        didSet {
-            needsDisplay = true
-        }
+    override var kind: Kind {
+        .item(item)
     }
 
     /// Creates a view that displays the given menu bar item.
     init(appState: AppState, item: MenuBarItem) {
         self.item = item
         self.appState = appState
+        self.placeholderImage = Self.makePlaceholderImage(for: item)
 
-        // set the frame to the full item frame size; the image will be centered when displayed
-        super.init(frame: CGRect(origin: .zero, size: item.bounds.size))
+        let initialImage = appState.imageCache.image(for: item.tag)
+        self.cachedImage = initialImage
+
+        super.init(frame: CGRect(origin: .zero, size: Self.preferredSize(for: item, image: initialImage)))
         unregisterDraggedTypes()
 
-        self.isEnabled = item.isMovable
+        isEnabled = item.isMovable
 
         configureCancellables()
     }
@@ -86,6 +77,10 @@ final class LayoutBarItemView: NSView {
 
     private var tooltipDelay: TimeInterval {
         appState?.settings.advanced.tooltipDelay ?? 0.5
+    }
+
+    override func draggingImage() -> NSImage? {
+        cachedImage?.nsImage ?? placeholderBitmapImage()
     }
 
     override func updateTrackingAreas() {
@@ -119,7 +114,9 @@ final class LayoutBarItemView: NSView {
         if let appState {
             let tag = item.tag
             let imageForTag = appState.imageCache.$images
-                .map { images -> MenuBarItemImageCache.CapturedImage? in images[tag] }
+                .map { [weak appState] _ -> MenuBarItemImageCache.CapturedImage? in
+                    appState?.imageCache.image(for: tag)
+                }
 
             imageForTag
                 .removeDuplicates(by: MenuBarItemImageCache.CapturedImage.isVisuallyEqual)
@@ -152,15 +149,19 @@ final class LayoutBarItemView: NSView {
 
     override func draw(_: NSRect) {
         if !isDraggingPlaceholder {
-            cachedImage?.nsImage.draw(
-                in: bounds,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: isEnabled ? 1.0 : 0.67
-            )
+            if let capturedImage = cachedImage?.nsImage {
+                capturedImage.draw(
+                    in: bounds,
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: isEnabled ? 1.0 : 0.67
+                )
+            } else {
+                drawPlaceholder()
+            }
             if Bridging.isProcessUnresponsive(item.ownerPID) {
                 let warningImage = NSImage.warning
-                let width: CGFloat = 15
+                let width = Metrics.unresponsiveBadgeWidth
                 let scale = width / warningImage.size.width
                 let size = CGSize(
                     width: width,
@@ -194,66 +195,109 @@ final class LayoutBarItemView: NSView {
             return
         }
 
-        // Data doesn't matter, but we do need to set the type.
         let pasteboardItem = NSPasteboardItem()
         pasteboardItem.setData(Data(), forType: .layoutBarItem)
 
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(bounds, contents: cachedImage?.nsImage)
+        draggingItem.setDraggingFrame(bounds, contents: draggingImage())
 
         beginDraggingSession(with: [draggingItem], event: event, source: self)
     }
+
+    private func preferredSize(for image: MenuBarItemImageCache.CapturedImage?) -> CGSize {
+        Self.preferredSize(for: item, image: image)
+    }
+
+    private static func preferredSize(
+        for item: MenuBarItem,
+        image: MenuBarItemImageCache.CapturedImage?
+    ) -> CGSize {
+        if let image {
+            return image.scaledSize
+        }
+
+        let width = item.bounds.width.clamped(to: Metrics.minWidth ... Metrics.maxWidth)
+        let height = max(item.bounds.height, Metrics.minHeight)
+        return CGSize(width: width, height: height)
+    }
+
+    private static func makePlaceholderImage(for item: MenuBarItem) -> NSImage? {
+        if let icon = item.sourceApplication?.icon ?? item.owningApplication?.icon {
+            return icon
+        }
+        return NSImage(
+            systemSymbolName: "menubar.rectangle",
+            accessibilityDescription: item.displayName
+        )
+    }
+
+    private func drawPlaceholder() {
+        let placeholderRect = bounds.insetBy(
+            dx: Metrics.placeholderHorizontalInset,
+            dy: Metrics.placeholderVerticalInset
+        )
+        let backgroundPath = NSBezierPath(
+            roundedRect: placeholderRect,
+            xRadius: Metrics.placeholderCornerRadius,
+            yRadius: Metrics.placeholderCornerRadius
+        )
+        NSColor.quaternaryLabelColor.withAlphaComponent(0.35).setFill()
+        backgroundPath.fill()
+
+        NSColor.separatorColor.withAlphaComponent(0.6).setStroke()
+        backgroundPath.lineWidth = 1
+        backgroundPath.stroke()
+
+        guard let placeholderImage else {
+            return
+        }
+
+        let iconBounds = placeholderRect.insetBy(
+            dx: Metrics.iconInset,
+            dy: Metrics.iconInset
+        )
+        let iconSide = min(iconBounds.width, iconBounds.height)
+        guard iconSide > 0 else {
+            return
+        }
+
+        let iconRect = CGRect(
+            x: placeholderRect.midX - (iconSide / 2),
+            y: placeholderRect.midY - (iconSide / 2),
+            width: iconSide,
+            height: iconSide
+        )
+
+        if placeholderImage.isTemplate {
+            let tinted = placeholderImage.copy() as? NSImage
+            tinted?.isTemplate = true
+            NSColor.secondaryLabelColor.set()
+            tinted?.draw(
+                in: iconRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: isEnabled ? 0.8 : 0.5
+            )
+        } else {
+            placeholderImage.draw(
+                in: iconRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: isEnabled ? 0.9 : 0.5
+            )
+        }
+    }
+
+    private func placeholderBitmapImage() -> NSImage? {
+        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else {
+            return nil
+        }
+        cacheDisplay(in: bounds, to: rep)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(rep)
+        return image
+    }
 }
-
-// MARK: LayoutBarItemView: NSDraggingSource
-
-extension LayoutBarItemView: NSDraggingSource {
-    func draggingSession(_: NSDraggingSession, sourceOperationMaskFor _: NSDraggingContext) -> NSDragOperation {
-        return .move
-    }
-
-    func draggingSession(_ session: NSDraggingSession, willBeginAt _: NSPoint) {
-        // make sure the container doesn't update its arranged views and that items
-        // aren't arranged during a dragging session
-        if let container = superview as? LayoutBarContainer {
-            container.canSetArrangedViews = false
-        }
-
-        // prevent the dragging image from animating back to its original location
-        session.animatesToStartingPositionsOnCancelOrFail = false
-
-        // async to prevent the view from disappearing before the dragging image appears
-        DispatchQueue.main.async {
-            self.isDraggingPlaceholder = true
-        }
-    }
-
-    func draggingSession(_: NSDraggingSession, endedAt _: NSPoint, operation _: NSDragOperation) {
-        defer {
-            // always remove container info at the end of a session
-            oldContainerInfo = nil
-        }
-
-        // since the session's `animatesToStartingPositionsOnCancelOrFail` property was
-        // set to false when the session began (above), there is no delay between the user
-        // releasing the dragging item and this method being called; thus, `isDraggingPlaceholder`
-        // only needs to be updated here; if we ever decide we want animation, it may also
-        // need to be updated inside `performDragOperation(_:)` on `LayoutBarPaddingView`
-        isDraggingPlaceholder = false
-
-        // if the drop occurs outside of a container, reinsert the view into its original
-        // container at its original index
-        if !hasContainer {
-            guard let (container, index) = oldContainerInfo else {
-                return
-            }
-            container.shouldAnimateNextLayoutPass = false
-            container.arrangedViews.insert(self, at: index)
-        }
-    }
-}
-
-extension LayoutBarItemView: NSAccessibilityLayoutItem {}
 
 // MARK: Layout Bar Item Pasteboard Type
 

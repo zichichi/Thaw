@@ -9,6 +9,7 @@
 import Combine
 import SwiftUI
 
+@MainActor
 final class IceBarColorManager: ObservableObject {
     @Published private(set) var colorInfo: MenuBarAverageColorInfo?
 
@@ -16,9 +17,15 @@ final class IceBarColorManager: ObservableObject {
 
     private var windowImage: CGImage?
 
+    /// Monotonically incremented by updateWindowImage and clearWindowImage.
+    /// A capture in flight stamps the value it observed; on completion it only
+    /// writes windowImage if the value still matches, so a late completion
+    /// can't undo a freshly cleared image or overwrite a newer capture.
+    private var windowImageGeneration: Int = 0
+
     private var cancellables = Set<AnyCancellable>()
 
-    /// Cancellable for the periodic refresh timer, active only while the Ice Bar is visible.
+    /// Cancellable for the periodic refresh timer, active only while the Thaw Bar is visible.
     private var periodicRefreshCancellable: AnyCancellable?
 
     func performSetup(with iceBarPanel: IceBarPanel) {
@@ -41,7 +48,10 @@ final class IceBarColorManager: ObservableObject {
                     else {
                         return
                     }
-                    updateWindowImage(for: screen)
+                    Task { [weak self] in
+                        guard let self else { return }
+                        await self.updateWindowImage(for: screen)
+                    }
                 }
                 .store(in: &c)
 
@@ -81,7 +91,8 @@ final class IceBarColorManager: ObservableObject {
                     return
                 }
                 // Clear window image on display changes to prevent memory growth
-                self.windowImage = nil
+                // and invalidate any in-flight capture from before the change.
+                self.clearWindowImage()
                 guard
                     let iceBarPanel,
                     iceBarPanel.isVisible,
@@ -90,9 +101,13 @@ final class IceBarColorManager: ObservableObject {
                 else {
                     return
                 }
-                updateWindowImage(for: screen)
-                withAnimation {
-                    self.updateColorInfo(with: iceBarPanel.frame, screen: screen)
+                let frame = iceBarPanel.frame
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.updateWindowImage(for: screen)
+                    withAnimation {
+                        self.updateColorInfo(with: frame, screen: screen)
+                    }
                 }
             }
             .store(in: &c)
@@ -105,10 +120,17 @@ final class IceBarColorManager: ObservableObject {
                 .sink { [weak self, weak iceBarPanel] isVisible in
                     guard let self else { return }
                     if isVisible {
-                        // Refresh windowImage immediately so the first color update isn't stale.
+                        // Refresh windowImage immediately so the first color
+                        // update isn't stale. Awaiting inside a Task so
+                        // updateColorInfo reads the fresh capture, not the
+                        // previous cycle's leftover.
                         if let iceBarPanel, let screen = iceBarPanel.screen, screen == .main {
-                            self.updateWindowImage(for: screen)
-                            self.updateColorInfo(with: iceBarPanel.frame, screen: screen)
+                            let frame = iceBarPanel.frame
+                            Task { [weak self] in
+                                guard let self else { return }
+                                await self.updateWindowImage(for: screen)
+                                self.updateColorInfo(with: frame, screen: screen)
+                            }
                         }
                         self.startPeriodicRefresh(for: iceBarPanel)
                     } else {
@@ -136,9 +158,13 @@ final class IceBarColorManager: ObservableObject {
                 else {
                     return
                 }
-                updateWindowImage(for: screen)
-                withAnimation {
-                    self.updateColorInfo(with: iceBarPanel.frame, screen: screen)
+                let frame = iceBarPanel.frame
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.updateWindowImage(for: screen)
+                    withAnimation {
+                        self.updateColorInfo(with: frame, screen: screen)
+                    }
                 }
             }
     }
@@ -147,11 +173,19 @@ final class IceBarColorManager: ObservableObject {
     private func stopPeriodicRefresh() {
         periodicRefreshCancellable?.cancel()
         periodicRefreshCancellable = nil
-        // Clear the window image to free memory when IceBar is hidden
+        // Clear the window image to free memory when IceBar is hidden.
+        clearWindowImage()
+    }
+
+    /// Clears windowImage and invalidates any in-flight capture. Use whenever
+    /// callers want a synchronous nil state that an outstanding async capture
+    /// must not be allowed to overwrite.
+    private func clearWindowImage() {
+        windowImageGeneration += 1
         windowImage = nil
     }
 
-    private func updateWindowImage(for screen: NSScreen) {
+    private func updateWindowImage(for screen: NSScreen) async {
         let windows = WindowInfo.createWindows(option: .onScreen)
         let displayID = screen.displayID
 
@@ -162,14 +196,22 @@ final class IceBarColorManager: ObservableObject {
             return
         }
 
-        guard let image = ScreenCapture.captureWindows(
-            with: [menuBarWindow.windowID, wallpaperWindow.windowID],
-            screenBounds: withMutableCopy(of: wallpaperWindow.bounds) { $0.size.height = 1 },
-            option: .nominalResolution
-        ) else {
-            return
-        }
+        let windowIDs = [menuBarWindow.windowID, wallpaperWindow.windowID]
+        let bounds = withMutableCopy(of: wallpaperWindow.bounds) { $0.size.height = 1 }
 
+        // Stamp our generation before suspending. If the counter advances while
+        // we await (a clearWindowImage, a stopPeriodicRefresh, or a newer
+        // updateWindowImage call), our completion is stale and must skip the
+        // write so we don't undo intentional clears or clobber a fresher image.
+        windowImageGeneration += 1
+        let generation = windowImageGeneration
+
+        let image = await ScreenCapture.captureWindowsAsync(
+            with: windowIDs,
+            screenBounds: bounds,
+            option: .nominalResolution
+        )
+        guard generation == windowImageGeneration, let image else { return }
         windowImage = image
     }
 
@@ -200,7 +242,14 @@ final class IceBarColorManager: ObservableObject {
     }
 
     func updateAllProperties(with frame: CGRect, screen: NSScreen) {
-        updateWindowImage(for: screen)
-        updateColorInfo(with: frame, screen: screen)
+        // Keep the public signature synchronous so IceBar.show doesn't ripple
+        // async upstream. Wraps the async refresh+color combo in a Task so
+        // updateColorInfo reads the fresh capture instead of the previous
+        // cycle's leftover.
+        Task { [weak self] in
+            guard let self else { return }
+            await self.updateWindowImage(for: screen)
+            self.updateColorInfo(with: frame, screen: screen)
+        }
     }
 }

@@ -6,8 +6,9 @@
 //  Copyright (Thaw) © 2026 Toni Förster
 //  Licensed under the GNU GPLv3
 
+@preconcurrency import AXSwift
 import Cocoa
-import Combine
+@preconcurrency import Combine
 import os
 
 /// Manager that monitors input events and implements the features
@@ -27,18 +28,77 @@ final class HIDEventManager: ObservableObject {
     /// Thread-safe counter for mouse-moved event throttling.
     private nonisolated let mouseMovedThrottleCounter = OSAllocatedUnfairLock(initialState: 0)
 
+    /// Timestamp of the last forwarded app menu click, used to debounce
+    /// duplicate events from a single physical interaction.
+    private var lastAppMenuClickTime: CFAbsoluteTime = 0
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
     /// Timer that periodically checks whether the event tap is still
     /// valid and attempts to recreate it if the Mach port was invalidated.
-    private var healthCheckTimer: Timer?
+    private nonisolated(unsafe) var healthCheckTimer: Timer?
 
     /// The currently pending show-on-hover delay task.
     private var hoverTask: Task<Void, any Error>?
 
+    /// Identity token for the current hover task so an older task cannot
+    /// clear state that belongs to a newer one.
+    private var hoverTaskToken: UUID?
+
+    /// A short-lived recovery task that repeatedly re-evaluates show-on-hover
+    /// right after the setting is enabled, so the first hover does not depend
+    /// on a later mouse-moved event or the periodic health check.
+    private var hoverRearmTask: Task<Void, Never>?
+    private var hoverRearmTaskToken: UUID?
+
+    /// Tracks the last seen value of showOnHover so the CombineLatest3 sink
+    /// can restrict rearm logic to false→true transitions only.
+    private var lastShowOnHover: Bool?
+
+    /// The currently pending hover action, used to avoid restarting the same
+    /// delay window on every small mouse move inside the same region.
+    private var pendingHoverAction: HoverAction?
+
+    /// The pending task that clears the temporary show-on-click guard.
+    private var clickTask: Task<Void, Never>?
+
+    /// Identity token for the current click task so a late/re-armed task
+    /// cannot call expireShowOnClickGuard after it has been superseded.
+    private var clickTaskToken: UUID?
+
+    /// The deadline for the temporary show-on-click protection region.
+    private var showOnClickGuardDeadline: ContinuousClock.Instant?
+
+    /// The temporary protected region around the first click that revealed
+    /// hidden items. Clicks inside this region are intercepted until the
+    /// system double-click window expires.
+    private var showOnClickGuardRegion: CGRect?
+
+    /// The display hosting the current protected region.
+    private var showOnClickGuardDisplayID: CGDirectDisplayID?
+
+    /// Tracks the state of the swallow/disarm lifecycle for the click guard tap.
+    private enum GuardMouseUpState {
+        /// No mouse-down has been swallowed; guard tap is idle between clicks.
+        case idle
+        /// A mouse-down was swallowed; swallow the matching mouse-up but keep
+        /// the guard armed afterward (double-click window still open).
+        case swallowing
+        /// A mouse-down was swallowed and teardown is pending; swallow the
+        /// matching mouse-up then fully disarm the guard.
+        case swallowingThenDisarm
+    }
+
+    private var guardMouseUpState: GuardMouseUpState = .idle
+
     /// The number of times the manager has been told to stop.
     private var disableCount = 0
+
+    private enum HoverAction {
+        case show
+        case hide
+    }
 
     /// Timestamp of the last `stopAll()` call, used by the health check
     /// to detect a stuck disabled state.
@@ -64,8 +124,16 @@ final class HIDEventManager: ObservableObject {
     /// The ID of the display the mouse was last seen on.
     private var lastMouseScreenID: CGDirectDisplayID?
 
+    /// The ID of the display that last had the active menu bar.
+    private var lastActiveMenuBarDisplayID: CGDirectDisplayID?
+
     /// The pending tooltip show task.
     private var tooltipTask: Task<Void, any Error>?
+
+    /// The pending secondary-context-menu reveal task. Holding a reference lets
+    /// a subsequent click (right or left) cancel the pre-100ms-delay reveal so
+    /// the menu doesn't pop up after the user has already dismissed or moved on.
+    private var pendingSecondaryContextMenuTask: Task<Void, any Error>?
 
     /// A Boolean value that indicates whether the manager is enabled.
     private var isEnabled = false {
@@ -86,6 +154,7 @@ final class HIDEventManager: ObservableObject {
                 }
                 mouseMovedTap.stop()
                 lastMouseScreenID = nil
+                lastActiveMenuBarDisplayID = nil
             }
         }
     }
@@ -96,14 +165,41 @@ final class HIDEventManager: ObservableObject {
     private(set) lazy var mouseDownMonitor = EventMonitor.universal(
         for: [.leftMouseDown, .rightMouseDown]
     ) { [weak self] event in
-        guard let self, isEnabled, let appState, let screen = bestScreen(appState: appState)
-        else {
+        guard let self, isEnabled, let appState else {
             return event
         }
+        // Prefer the screen the mouse is physically on so clicks on the external
+        // monitor's menu bar are processed against the correct display geometry.
+        // Fall back to the active-menu-bar screen when the mouse screen cannot
+        // be determined.
+        // Note: getMenuBarHeight() is NOT used as a gate here because it may
+        // return nil transiently during startup (before the Window Server has
+        // populated the menu bar window list). The downstream hit-testing in
+        // isMouseInsideMenuBar() / isMouseInsideEmptyMenuBarSpace() handles the
+        // case where the menu bar is genuinely absent (fullscreen app, etc.).
+        let screen: NSScreen
+        if let s = NSScreen.screenWithMouse ?? NSScreen.main {
+            screen = s
+        } else if let s = bestScreen(appState: appState) {
+            screen = s
+        } else {
+            return event
+        }
+        // Cancel any pending secondary-context-menu task on every mouse-down so
+        // a dismiss click or a follow-up click can't be raced by a previously
+        // scheduled reveal that hasn't yet cleared its 100ms delay.
+        pendingSecondaryContextMenuTask?.cancel()
         switch event.type {
         case .leftMouseDown:
-            handleShowOnClick(appState: appState, screen: screen, isDoubleClick: event.clickCount > 1)
-            handleSmartRehide(with: event, appState: appState, screen: screen)
+            // Check app menu first - if click is on app menu area, don't trigger
+            // show-on-click or smart rehide (the click belongs to the app menu)
+            let isAppMenuClick = handleApplicationMenuClickThrough(appState: appState, screen: screen)
+            if !isAppMenuClick {
+                // Capture the click location synchronously from the event.
+                let clickLocation = NSEvent.mouseLocation
+                handleShowOnClick(appState: appState, screen: screen, clickLocation: clickLocation, modifierFlags: event.modifierFlags, isDoubleClick: event.clickCount > 1)
+                handleSmartRehide(with: event, appState: appState, screen: screen)
+            }
         case .rightMouseDown:
             handleSecondaryContextMenu(appState: appState, screen: screen)
         default:
@@ -115,6 +211,14 @@ final class HIDEventManager: ObservableObject {
             screen: screen
         )
         dismissMenuBarTooltip()
+
+        // update control item states when active menu bar display changes
+        let currentMenuBarID = NSScreen.screenWithActiveMenuBar?.displayID
+        if currentMenuBarID != lastActiveMenuBarDisplayID {
+            lastActiveMenuBarDisplayID = currentMenuBarID
+            appState.menuBarManager.updateControlItemStates()
+        }
+
         return event
     }
 
@@ -178,6 +282,13 @@ final class HIDEventManager: ObservableObject {
                 appState.menuBarManager.updateControlItemStates(for: screen)
             }
 
+            // also re-evaluate when active menu bar display changes
+            let currentMenuBarID = NSScreen.screenWithActiveMenuBar?.displayID
+            if currentMenuBarID != lastActiveMenuBarDisplayID {
+                lastActiveMenuBarDisplayID = currentMenuBarID
+                appState.menuBarManager.updateControlItemStates(for: screen)
+            }
+
             handleShowOnHover(appState: appState, screen: screen)
             handleMenuBarTooltip(appState: appState, screen: screen)
         }
@@ -192,6 +303,66 @@ final class HIDEventManager: ObservableObject {
             handleShowOnScroll(with: event, appState: appState, screen: screen)
         }
         return event
+    }
+
+    /// Active tap that temporarily swallows clicks in the protected region
+    /// after a first show-on-click reveal, so a double-click can still be
+    /// recognized even though hidden items have appeared under the cursor.
+    private(set) lazy var showOnClickGuardTap = EventTap(
+        label: "showOnClickGuardTap",
+        types: [.leftMouseDown, .leftMouseUp],
+        location: .sessionEventTap,
+        placement: .headInsertEventTap,
+        option: .defaultTap
+    ) { [weak self] _, event in
+        guard let self else {
+            return event
+        }
+
+        expireShowOnClickGuardIfNeeded()
+
+        if event.type == .leftMouseUp, guardMouseUpState != .idle {
+            let state = guardMouseUpState
+            guardMouseUpState = .idle
+            if state == .swallowingThenDisarm {
+                disarmShowOnClickGuard()
+            }
+            return nil
+        }
+
+        guard isEnabled, let appState, isShowOnClickGuardActive else {
+            return event
+        }
+
+        guard event.type == .leftMouseDown else {
+            return event
+        }
+
+        guard isPointInsideShowOnClickGuardRegion(NSEvent.mouseLocation) else {
+            return event
+        }
+
+        let clickState = event.getIntegerValueField(.mouseEventClickState)
+        if clickState > 1,
+           appState.settings.general.showOnClick,
+           appState.settings.general.showOnDoubleClick,
+           let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden),
+           alwaysHiddenSection.isEnabled
+        {
+            alwaysHiddenSection.show()
+            guardMouseUpState = .swallowingThenDisarm
+        } else if event.flags.contains(.maskAlternate),
+                  appState.settings.advanced.useOptionClickToShowAlwaysHiddenSection,
+                  let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden),
+                  alwaysHiddenSection.isEnabled
+        {
+            alwaysHiddenSection.toggle()
+            guardMouseUpState = .swallowingThenDisarm
+        } else {
+            guardMouseUpState = .swallowing
+        }
+
+        return nil
     }
 
     // MARK: All Monitors
@@ -220,6 +391,11 @@ final class HIDEventManager: ObservableObject {
             appState.settings.displaySettings.isAlwaysShowEnabledOnAnyDisplay
     }
 
+    /// Maximum width a normal menu bar item can have. Windows wider than
+    /// this are expanded section-divider control items used to push hidden
+    /// items off-screen and must be excluded from the bounds lookup.
+    private static let maxReasonableItemWidth: CGFloat = 500
+
     /// Rebuilds the window bounds lookup table from the current item cache.
     ///
     /// Includes ALL menu bar item windows (both managed and unmanaged) so that
@@ -236,6 +412,9 @@ final class HIDEventManager: ObservableObject {
         ])
         for windowID in allWindowIDs {
             if let bounds = Bridging.getWindowBounds(for: windowID) {
+                guard bounds.width <= Self.maxReasonableItemWidth else {
+                    continue
+                }
                 buffer.append((windowID: windowID, bounds: bounds))
                 knownWindowIDs.insert(windowID)
             }
@@ -245,6 +424,9 @@ final class HIDEventManager: ObservableObject {
         // This is a fallback for items that might not be reported by the Window Server.
         let items = cache.managedItems
         for item in items where item.isOnScreen && !knownWindowIDs.contains(item.windowID) {
+            guard item.bounds.width <= Self.maxReasonableItemWidth else {
+                continue
+            }
             buffer.append((windowID: item.windowID, bounds: item.bounds))
             knownWindowIDs.insert(item.windowID)
         }
@@ -253,11 +435,50 @@ final class HIDEventManager: ObservableObject {
         windowBoundsLock.withLock { $0 = entries }
     }
 
+    /// Rebuilds the bounds lookup using the current on-screen menu bar layout.
+    ///
+    /// Section show/hide changes often keep the same window IDs while moving
+    /// items on or off screen. Rebuilding from the last item cache in those
+    /// moments can leave hit testing with stale geometry, so use a direct
+    /// Window Server snapshot instead.
+    ///
+    /// Unlike ``rebuildWindowBoundsLookup(from:)``, this method intentionally
+    /// omits the managed-items fallback. During a section transition the cached
+    /// bounds are stale (items have moved on/off screen while keeping the same
+    /// window ID), so appending them here would corrupt rather than improve the
+    /// lookup. The trade-off is that an item not yet reported by the Window
+    /// Server immediately after a transition may be briefly unhittable; that
+    /// window is typically sub-frame and acceptable given the correctness gain.
+    private func rebuildWindowBoundsLookupFromCurrentLayout() {
+        let allWindowIDs = Bridging.getMenuBarWindowList(option: [
+            .onScreen, .activeSpace, .itemsOnly,
+        ])
+
+        let entries = allWindowIDs.compactMap { windowID -> (windowID: CGWindowID, bounds: CGRect)? in
+            guard let bounds = Bridging.getWindowBounds(for: windowID) else {
+                return nil
+            }
+
+            guard bounds.width <= Self.maxReasonableItemWidth else {
+                return nil
+            }
+
+            return (windowID: windowID, bounds: bounds)
+        }
+
+        windowBoundsLock.withLock { $0 = entries }
+    }
+
     /// Configures the internal observers for the manager.
     private func configureCancellables() {
         var c = Set<AnyCancellable>()
 
         if let appState {
+            // Pre-seed so the initial CombineLatest3 emission is treated as a
+            // no-op when showOnHover is already true at subscription time,
+            // avoiding unnecessary startup rearm work.
+            lastShowOnHover = appState.settings.general.showOnHover
+
             // Start or stop the mouse-moved tap when show-on-hover,
             // menu-bar-tooltips, or per-display configurations change.
             Publishers.CombineLatest3(
@@ -265,7 +486,7 @@ final class HIDEventManager: ObservableObject {
                 appState.settings.advanced.$showMenuBarTooltips,
                 appState.settings.displaySettings.$configurations
             )
-            .sink { [weak self] _, _, _ in
+            .sink { [weak self] showOnHover, _, _ in
                 guard let self, isEnabled else {
                     return
                 }
@@ -274,6 +495,36 @@ final class HIDEventManager: ObservableObject {
                 } else {
                     mouseMovedTap.stop()
                 }
+
+                defer { lastShowOnHover = showOnHover }
+
+                if !showOnHover {
+                    hoverRearmTask?.cancel()
+                    hoverRearmTask = nil
+                    hoverRearmTaskToken = nil
+                    hoverTask?.cancel()
+                    hoverTask = nil
+                    hoverTaskToken = nil
+                    pendingHoverAction = nil
+                    return
+                }
+
+                // Only rearm when showOnHover transitions false→true; skip the
+                // rearm path when other inputs (tooltips, display config) change
+                // while showOnHover was already enabled.
+                guard lastShowOnHover != true else {
+                    return
+                }
+
+                appState.menuBarManager.showOnHoverAllowed = true
+                hoverRearmTask?.cancel()
+                hoverRearmTask = nil
+                hoverRearmTaskToken = nil
+                hoverTask?.cancel()
+                hoverTask = nil
+                hoverTaskToken = nil
+                pendingHoverAction = nil
+                scheduleHoverRearmChecks(appState: appState)
             }
             .store(in: &c)
 
@@ -290,15 +541,19 @@ final class HIDEventManager: ObservableObject {
             // When any section's control item state changes, the menu bar layout shifts.
             // Merge all sections into a single publisher so only one cache refresh fires
             // per layout change batch, regardless of how many sections change at once.
+            // Drop the initial emission per publisher so MergeMany no longer relies on
+            // a global dropFirst count and rebuildWindowBoundsLookupFromCurrentLayout()
+            // runs only for real updates.
             Publishers.MergeMany(
-                appState.menuBarManager.sections.map { $0.controlItem.$state.replace(with: ()) }
+                appState.menuBarManager.sections.map {
+                    $0.controlItem.$state
+                        .dropFirst()
+                        .replace(with: ())
+                }
             )
             .debounce(for: .milliseconds(200), scheduler: DispatchQueue.main)
-            .sink { [weak appState] in
-                guard let appState else { return }
-                Task {
-                    await appState.itemManager.cacheItemsIfNeeded()
-                }
+            .sink { [weak self] in
+                self?.rebuildWindowBoundsLookupFromCurrentLayout()
             }
             .store(in: &c)
 
@@ -361,15 +616,22 @@ final class HIDEventManager: ObservableObject {
 
         guard isEnabled else { return }
 
+        // Check all NSEvent-based monitors and restart any that stopped running.
+        // This handles cases where macOS silently invalidates monitors due to
+        // accessibility permission changes, system resource pressure, or other
+        // unexpected conditions.
+        for monitor in allMonitors {
+            monitor.ensureRunning()
+        }
+
         // Check the mouseMovedTap if it should be active.
-        if let appState, needsMouseMovedTap(appState: appState) {
-            if mouseMovedTap.ensureValid() {
-                // Tap is valid. Make sure it's enabled.
-                if !mouseMovedTap.isEnabled {
-                    Self.diagLog.warning("mouseMovedTap was valid but not enabled, re-enabling")
-                    mouseMovedTap.start()
-                }
-            }
+        if let appState,
+           needsMouseMovedTap(appState: appState),
+           mouseMovedTap.ensureValid(),
+           !mouseMovedTap.isEnabled
+        {
+            Self.diagLog.warning("mouseMovedTap was valid but not enabled, re-enabling")
+            mouseMovedTap.start()
         }
     }
 
@@ -393,60 +655,299 @@ final class HIDEventManager: ObservableObject {
         }
         disableCount += 1
         lastStopTimestamp = .now
+        hoverRearmTask?.cancel()
+        hoverRearmTask = nil
+        hoverRearmTaskToken = nil
+        hoverTask?.cancel()
+        hoverTask = nil
+        hoverTaskToken = nil
+        pendingHoverAction = nil
+        disarmShowOnClickGuard()
         dismissMenuBarTooltip()
+    }
+
+    deinit {
+        healthCheckTimer?.invalidate()
     }
 }
 
 // MARK: - Handler Methods
 
 extension HIDEventManager {
+    private func isMouseNearMenuBar(screen: NSScreen, verticalPadding: CGFloat = 80) -> Bool {
+        guard
+            let mouseLocation = MouseHelpers.locationAppKit,
+            let menuBarHeight = screen.getMenuBarHeight()
+        else {
+            return false
+        }
+
+        return mouseLocation.x >= screen.frame.minX
+            && mouseLocation.x <= screen.frame.maxX
+            && mouseLocation.y <= screen.frame.maxY
+            && mouseLocation.y >= screen.frame.maxY - menuBarHeight - verticalPadding
+    }
+
+    private func scheduleHoverRearmChecks(appState: AppState) {
+        let taskToken = UUID()
+        hoverRearmTaskToken = taskToken
+        hoverRearmTask = Task { @MainActor [weak self, weak appState] in
+            guard let self, let appState else {
+                return
+            }
+
+            defer {
+                if hoverRearmTaskToken == taskToken {
+                    hoverRearmTask = nil
+                    hoverRearmTaskToken = nil
+                }
+            }
+
+            for attempt in 0 ..< 12 {
+                do {
+                    try await Task.sleep(for: attempt == 0 ? .milliseconds(50) : .milliseconds(200))
+                } catch {
+                    return
+                }
+
+                guard
+                    hoverRearmTaskToken == taskToken,
+                    isEnabled,
+                    appState.settings.general.showOnHover,
+                    appState.menuBarManager.showOnHoverAllowed
+                else {
+                    return
+                }
+
+                if needsMouseMovedTap(appState: appState) {
+                    _ = mouseMovedTap.ensureValid()
+                    mouseMovedTap.start()
+                }
+
+                guard let screen = NSScreen.screenWithMouse ?? bestScreen(appState: appState) else {
+                    continue
+                }
+
+                guard isMouseNearMenuBar(screen: screen) else {
+                    return
+                }
+
+                handleShowOnHover(appState: appState, screen: screen)
+
+                if pendingHoverAction == .show ||
+                    !(appState.menuBarManager.section(withName: .hidden)?.isHidden ?? true)
+                {
+                    return
+                }
+            }
+        }
+    }
+
     // MARK: Handle Show On Click
 
-    private func handleShowOnClick(appState: AppState, screen: NSScreen, isDoubleClick: Bool = false) {
+    private func handleShowOnClick(appState: AppState, screen: NSScreen, clickLocation: CGPoint, modifierFlags: NSEvent.ModifierFlags, isDoubleClick: Bool = false) {
+        guard appState.settings.general.showOnClick else {
+            return
+        }
+
+        // Suppress show-on-click when no menu bar status items are currently
+        // rendered on-screen for the active space. This catches the case where
+        // a fullscreen app has auto-hidden the menu bar and the click lands in
+        // the top-of-screen trigger zone before the menu bar visually reveals.
+        // NSApp.currentSystemPresentationOptions is per-app and does not
+        // reflect another app's fullscreen state, so the items-list signal is
+        // used directly without a precondition.
+        if !screen.isSystemMenuBarVisible() {
+            Self.diagLog.debug("handleShowOnClick: suppressing, no menu bar items on-screen for active space")
+            return
+        }
+
         guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
             return
         }
 
-        Task {
-            if isDoubleClick {
-                guard
-                    appState.settings.general.showOnClick,
-                    appState.settings.general.showOnDoubleClick
-                else {
-                    return
-                }
+        // Defer to third-party menu bar widgets such as notch overlay
+        // applications whose windows aren't reported in the standard menu bar
+        // items query but visually occupy menu bar space. The AX hit-test
+        // resolves the actual UI element at the cursor, so clicks that land
+        // on a widget's icon don't also trigger Thaw's show-on-click reveal.
+        if isCursorOverForeignWidgetUIElement() {
+            Self.diagLog.debug("handleShowOnClick: suppressing, cursor over foreign UI element")
+            return
+        }
+
+        if isDoubleClick {
+            guard appState.settings.general.showOnDoubleClick else {
+                return
+            }
+            Task {
                 if let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden),
                    alwaysHiddenSection.isEnabled
                 {
-                    alwaysHiddenSection.show()
-                    return
-                }
-            } else {
-                guard appState.settings.general.showOnClick else {
-                    return
-                }
-
-                if NSEvent.modifierFlags == .control {
-                    handleSecondaryContextMenu(appState: appState, screen: screen)
-                    return
-                }
-
-                if NSEvent.modifierFlags == .option {
-                    if let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden),
-                       alwaysHiddenSection.isEnabled
-                    {
-                        alwaysHiddenSection.show()
-                        return
-                    }
-                }
-
-                if let hiddenSection = appState.menuBarManager.section(withName: .hidden),
-                   hiddenSection.isEnabled
-                {
-                    hiddenSection.toggle()
+                    alwaysHiddenSection.toggle()
                 }
             }
+        } else {
+            if modifierFlags.contains(.control) {
+                handleSecondaryContextMenu(appState: appState, screen: screen)
+                return
+            }
+
+            if modifierFlags.contains(.option) {
+                if appState.settings.advanced.useOptionClickToShowAlwaysHiddenSection,
+                   let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden),
+                   alwaysHiddenSection.isEnabled
+                {
+                    Task { alwaysHiddenSection.toggle() }
+                }
+                return
+            }
+
+            if let hiddenSection = appState.menuBarManager.section(withName: .hidden),
+               hiddenSection.isEnabled
+            {
+                // If the always-hidden section is currently showing via the Thaw
+                // Bar, a plain click should close it rather than switch the Thaw
+                // Bar to the hidden section.
+                if appState.menuBarManager.iceBarPanel.currentSection == .alwaysHidden,
+                   let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden)
+                {
+                    disarmShowOnClickGuard()
+                    Task { alwaysHiddenSection.hide() }
+                    return
+                }
+
+                let shouldArmGuard =
+                    appState.settings.general.showOnDoubleClick
+                        && hiddenSection.isHidden
+                        && (appState.menuBarManager.section(withName: .alwaysHidden)?.isEnabled ?? false)
+
+                // Arm the guard synchronously before toggling so the CGEventTap
+                // is active before any second click can arrive; a Task hop would
+                // leave a window where the tap is not yet started.
+                if shouldArmGuard {
+                    armShowOnClickGuard(screen: screen, at: clickLocation)
+                } else {
+                    disarmShowOnClickGuard()
+                }
+
+                Task { hiddenSection.toggle() }
+            }
         }
+    }
+
+    private func armShowOnClickGuard(screen: NSScreen, at clickLocation: CGPoint) {
+        guard let menuBarHeight = screen.getMenuBarHeight() else {
+            disarmShowOnClickGuard()
+            return
+        }
+
+        let protectionWidth = max(44, menuBarHeight * 2)
+        let protectionHeight = menuBarHeight + 6
+        let minY = screen.frame.maxY - menuBarHeight - 3
+        showOnClickGuardRegion = CGRect(
+            x: clickLocation.x - protectionWidth / 2,
+            y: minY,
+            width: protectionWidth,
+            height: protectionHeight
+        )
+        showOnClickGuardDisplayID = screen.displayID
+        showOnClickGuardDeadline = .now + .seconds(NSEvent.doubleClickInterval)
+        guardMouseUpState = .idle
+
+        // Validate (and recreate if needed) before enabling; a stale Mach port
+        // would silently no-op on start() and leave the guard tap inactive.
+        guard showOnClickGuardTap.ensureValid() else {
+            disarmShowOnClickGuard()
+            return
+        }
+        showOnClickGuardTap.start()
+
+        clickTask?.cancel()
+        let token = UUID()
+        clickTaskToken = token
+        clickTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval))
+            } catch {
+                return
+            }
+            await MainActor.run {
+                guard self?.clickTaskToken == token else { return }
+                self?.expireShowOnClickGuard()
+            }
+        }
+    }
+
+    private func expireShowOnClickGuard() {
+        if guardMouseUpState != .idle {
+            // Mouse button is still held; defer full teardown until the
+            // swallowed mouse-up arrives so the tap stays active.
+            guardMouseUpState = .swallowingThenDisarm
+            showOnClickGuardDeadline = nil
+            showOnClickGuardRegion = nil
+            showOnClickGuardDisplayID = nil
+            clickTask = nil
+            clickTaskToken = nil
+            return
+        }
+
+        disarmShowOnClickGuard()
+    }
+
+    private func disarmShowOnClickGuard() {
+        // If we're waiting for a swallowed mouse-up, defer disarming until it arrives.
+        // This keeps the CGEventTap active until the swallowed mouse-up is processed
+        // and prevents a stray mouse-up being delivered to the system.
+        if guardMouseUpState != .idle {
+            guardMouseUpState = .swallowingThenDisarm
+            return
+        }
+
+        clickTask?.cancel()
+        clickTask = nil
+        clickTaskToken = nil
+        showOnClickGuardDeadline = nil
+        showOnClickGuardRegion = nil
+        showOnClickGuardDisplayID = nil
+        guardMouseUpState = .idle
+        showOnClickGuardTap.stop()
+    }
+
+    /// Tears down the guard if its deadline has passed. Call this before
+    /// reading `isShowOnClickGuardActive` in contexts that need to react
+    /// to expiry (e.g. the tap callback, hit-test helpers).
+    private func expireShowOnClickGuardIfNeeded() {
+        guard let deadline = showOnClickGuardDeadline, deadline <= .now else {
+            return
+        }
+        expireShowOnClickGuard()
+    }
+
+    /// Pure read — returns whether the guard is currently armed and within its
+    /// deadline. Does not mutate state; call `expireShowOnClickGuardIfNeeded()`
+    /// first if expiry should be applied.
+    private var isShowOnClickGuardActive: Bool {
+        guard let deadline = showOnClickGuardDeadline else {
+            return false
+        }
+        return deadline > .now && showOnClickGuardRegion != nil
+    }
+
+    private func isPointInsideShowOnClickGuardRegion(_ point: CGPoint) -> Bool {
+        expireShowOnClickGuardIfNeeded()
+        guard isShowOnClickGuardActive,
+              let region = showOnClickGuardRegion,
+              let displayID = showOnClickGuardDisplayID
+        else {
+            return false
+        }
+
+        guard NSScreen.screenWithMouse?.displayID == displayID else {
+            return false
+        }
+
+        return region.contains(point)
     }
 
     // MARK: Handle Smart Rehide
@@ -470,7 +971,7 @@ extension HIDEventManager {
             }
         }
 
-        // Only continue if the click is not inside the Ice Bar, at
+        // Only continue if the click is not inside the Thaw Bar, at
         // least one section is visible, and the mouse is not inside
         // the menu bar.
         guard
@@ -542,7 +1043,17 @@ extension HIDEventManager {
         appState: AppState,
         screen: NSScreen
     ) {
-        Task {
+        pendingSecondaryContextMenuTask = Task { [weak self] in
+            guard let self else { return }
+            // Suppress when no menu bar items are rendered on-screen for the
+            // active space. Catches phantom right-clicks landing in the menu bar
+            // y-band while a fullscreen app has auto-hidden the menu bar; the
+            // event still passes through to the underlying app so its native
+            // context menu can appear normally.
+            if !screen.isSystemMenuBarVisible() {
+                Self.diagLog.debug("handleSecondaryContextMenu: suppressing, no menu bar items on-screen for active space")
+                return
+            }
             guard
                 appState.settings.advanced.enableSecondaryContextMenu,
                 isMouseInsideEmptyMenuBarSpace(
@@ -553,10 +1064,198 @@ extension HIDEventManager {
             else {
                 return
             }
-            // Delay prevents the menu from immediately closing.
+            // Delay prevents the menu from immediately closing and gives any
+            // foreign widget's own right-click menu a chance to render. Notch
+            // overlay applications cover wide regions of the menu bar visually
+            // but only respond to clicks on their actual icon, so probing
+            // whether a foreign menu opened in response to this click is more
+            // accurate than testing window bounds.
             try await Task.sleep(for: .milliseconds(100))
+            try Task.checkCancellation()
+            if isForeignPopUpMenuOpen() {
+                Self.diagLog.debug("handleSecondaryContextMenu: suppressing, foreign pop-up menu is open")
+                return
+            }
+            if isCursorOverForeignWidgetUIElement() {
+                Self.diagLog.debug("handleSecondaryContextMenu: suppressing, cursor over foreign UI element")
+                return
+            }
             appState.menuBarManager.showSecondaryContextMenu(at: mouseLocation)
         }
+    }
+
+    /// Returns whether the cursor sits on a UI element owned by a foreign
+    /// third-party menu bar widget such as a notch overlay application,
+    /// using the system-wide accessibility hit-test. Excludes Thaw's own
+    /// elements, the Window Server (which owns the menu bar background), and
+    /// elements with a menu-bar / menu / menu-item role (the front app's
+    /// File/Edit/View region returns the app's PID but a menu-bar-class
+    /// role). When the helper returns true, Thaw defers to the widget under
+    /// the cursor even if the widget didn't open its own pop-up menu in
+    /// response to the click.
+    private func isCursorOverForeignWidgetUIElement() -> Bool {
+        guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
+            return false
+        }
+        guard let element = AXHelpers.element(at: mouseLocation) else {
+            return false
+        }
+        guard let pid = AXHelpers.pid(for: element), pid > 0 else {
+            return false
+        }
+        if pid == getpid() {
+            return false
+        }
+        // SystemUIServer owns part of the system menu bar; AX returning it
+        // indicates the cursor is over empty menu bar space. WindowServer also
+        // renders menu bar surfaces but is a system daemon with no bundle
+        // identifier, so NSRunningApplication can't resolve it; fall back to a
+        // process-name lookup via proc_name for that case.
+        if NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.apple.systemuiserver" {
+            return false
+        }
+        if isWindowServerPID(pid) {
+            return false
+        }
+        // The frontmost application owns its own menu bar background between
+        // File/Edit/View items. AX returns the app's menu bar element here
+        // even though the geometric isMouseInsideEmptyMenuBarSpace check
+        // already passed (no specific menu item is hit). Filter by role: a
+        // menu bar / menu / menu item role means the cursor is over the front
+        // app's menu bar, not over a third-party widget overlay.
+        switch AXHelpers.role(for: element) {
+        case .menuBar, .menu, .menuItem, .menuBarItem:
+            return false
+        default:
+            return true
+        }
+    }
+
+    /// Returns whether the given PID belongs to the macOS WindowServer
+    /// daemon. WindowServer has no bundle identifier and is not represented as
+    /// an NSRunningApplication, so the executable name has to be read via
+    /// proc_name. Used to exclude WindowServer-owned AX elements from the
+    /// foreign-widget hit-test.
+    private func isWindowServerPID(_ pid: pid_t) -> Bool {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let length = buffer.withUnsafeMutableBufferPointer { ptr -> Int32 in
+            guard let base = ptr.baseAddress else { return -1 }
+            return proc_name(pid, base, UInt32(ptr.count))
+        }
+        guard length > 0 else { return false }
+        let procName = buffer.prefix { $0 != 0 }.map(UInt8.init)
+        return String(data: Data(procName), encoding: .utf8) == "WindowServer"
+    }
+
+    /// Returns whether any non-Thaw window at the pop-up-menu window level is
+    /// currently on-screen. Right-click menus (NSMenu and equivalents) render
+    /// at kCGPopUpMenuWindowLevel, while persistent overlay windows from
+    /// notch overlay applications sit a level below. Filtering to the exact
+    /// pop-up level distinguishes an actually open menu from a widget's idle
+    /// overlay, which is needed to avoid showing Thaw's secondary context
+    /// menu after a click that landed on a foreign widget that opened its own
+    /// menu.
+    private func isForeignPopUpMenuOpen() -> Bool {
+        let ownPID = getpid()
+        let popUpLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
+        let windows = WindowInfo.createWindows(option: .onScreen)
+        for window in windows where window.ownerPID != ownPID {
+            guard window.layer == popUpLevel else { continue }
+            return true
+        }
+        return false
+    }
+
+    // MARK: Handle Application Menu Click-Through
+
+    /// Checks if the click is on an application menu (File, Edit, View, etc.)
+    /// and forwards clicks when expanded section-divider windows block them.
+    ///
+    /// After a profile change with ThawBar active, the Window Server tracks
+    /// the expanded control item windows and routes clicks to them instead
+    /// of the application menus underneath. This method uses AX to locate
+    /// the correct menu bar item, then posts a synthetic click directly to
+    /// the owning application's PID.
+    ///
+    /// - Returns: `true` if the click was on an application menu area (regardless
+    ///   of whether forwarding was needed), `false` otherwise. Callers should skip
+    ///   show-on-click behavior when this returns `true`.
+    @discardableResult
+    private func handleApplicationMenuClickThrough(
+        appState: AppState,
+        screen: NSScreen
+    ) -> Bool {
+        guard
+            isMouseInsideMenuBar(appState: appState, screen: screen),
+            let mouseLocation = MouseHelpers.locationCoreGraphics
+        else {
+            return false
+        }
+
+        // Capture the AX frame before any UI changes; the frame is needed
+        // for click forwarding and can become unavailable after closing/hiding UI.
+        guard let initialFrame = applicationMenuItemFrame(at: mouseLocation) else {
+            return false
+        }
+
+        // Click is on app menu area - check if we need to forward it
+        let hasExpandedDivider = appState.menuBarManager.sections.contains { section in
+            section.controlItem.isSectionDivider && section.controlItem.state == .hideSection
+        }
+        guard hasExpandedDivider else {
+            // No expanded divider blocking the click, but still on app menu
+            return true
+        }
+
+        let expandedWindowCoversClick = Bridging.getMenuBarWindowList(option: [
+            .onScreen, .activeSpace, .itemsOnly,
+        ]).contains { windowID in
+            guard let bounds = Bridging.getWindowBounds(for: windowID) else {
+                return false
+            }
+            return bounds.width > Self.maxReasonableItemWidth && bounds.contains(mouseLocation)
+        }
+        guard expandedWindowCoversClick else {
+            // On app menu but not covered by expanded window
+            return true
+        }
+
+        // Forward the click to the app menu
+        appState.menuBarManager.iceBarPanel.close()
+        for section in appState.menuBarManager.sections {
+            section.hide()
+        }
+
+        guard let frontApp = NSWorkspace.shared.menuBarOwningApplication else {
+            return true
+        }
+
+        // Reuse the originally observed frame for click calculation.
+        let frame = initialFrame
+
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastAppMenuClickTime >= 0.3 else { return true }
+        lastAppMenuClickTime = now
+
+        let clickPoint = CGPoint(x: frame.midX, y: frame.midY)
+        let pid = frontApp.processIdentifier
+
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return true }
+        let mouseDown = CGEvent(
+            mouseEventSource: source,
+            mouseType: .leftMouseDown,
+            mouseCursorPosition: clickPoint,
+            mouseButton: .left
+        )
+        let mouseUp = CGEvent(
+            mouseEventSource: source,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: clickPoint,
+            mouseButton: .left
+        )
+        mouseDown?.postToPid(pid)
+        mouseUp?.postToPid(pid)
+        return true
     }
 
     // MARK: Handle Menu Bar Item Drag Stop
@@ -588,7 +1287,7 @@ extension HIDEventManager {
         guard
             !isDraggingMenuBarItem,
             event.modifierFlags.contains(.command),
-            isMouseInsideMenuBar(appState: appState, screen: screen)
+            isMouseInsideMenuBarItem(appState: appState, screen: screen)
         else {
             return
         }
@@ -624,22 +1323,43 @@ extension HIDEventManager {
 
         let delay = appState.settings.advanced.showOnHoverDelay
 
-        hoverTask?.cancel()
-
         if hiddenSection.isHidden {
             guard
                 isMouseInsideEmptyMenuBarSpace(
                     appState: appState,
                     screen: screen
-                )
+                ),
+                !isCursorOverForeignWidgetUIElement()
             else {
+                if pendingHoverAction == .show {
+                    hoverTask?.cancel()
+                    hoverTask = nil
+                    hoverTaskToken = nil
+                    pendingHoverAction = nil
+                }
                 return
             }
+            guard pendingHoverAction != .show else {
+                return
+            }
+            hoverTask?.cancel()
+            pendingHoverAction = .show
+            let taskToken = UUID()
+            hoverTaskToken = taskToken
             hoverTask = Task {
-                defer { hoverTask = nil }
+                defer {
+                    if hoverTaskToken == taskToken {
+                        hoverTask = nil
+                        hoverTaskToken = nil
+                        if pendingHoverAction == .show {
+                            pendingHoverAction = nil
+                        }
+                    }
+                }
                 try await Task.sleep(for: .seconds(delay))
-                // Make sure the mouse is still inside.
+                // Make sure the manager is still enabled and the mouse is still inside.
                 guard
+                    isEnabled,
                     isMouseInsideEmptyMenuBarSpace(
                         appState: appState,
                         screen: screen
@@ -654,13 +1374,35 @@ extension HIDEventManager {
                 !isMouseInsideMenuBar(appState: appState, screen: screen),
                 !isMouseInsideIceBar(appState: appState)
             else {
+                if pendingHoverAction == .hide {
+                    hoverTask?.cancel()
+                    hoverTask = nil
+                    hoverTaskToken = nil
+                    pendingHoverAction = nil
+                }
                 return
             }
+            guard pendingHoverAction != .hide else {
+                return
+            }
+            hoverTask?.cancel()
+            pendingHoverAction = .hide
+            let taskToken = UUID()
+            hoverTaskToken = taskToken
             hoverTask = Task {
-                defer { hoverTask = nil }
+                defer {
+                    if hoverTaskToken == taskToken {
+                        hoverTask = nil
+                        hoverTaskToken = nil
+                        if pendingHoverAction == .hide {
+                            pendingHoverAction = nil
+                        }
+                    }
+                }
                 try await Task.sleep(for: .seconds(delay))
-                // Make sure the mouse is still outside.
+                // Make sure the manager is still enabled and the mouse is still outside.
                 guard
+                    isEnabled,
                     !isMouseInsideMenuBar(appState: appState, screen: screen),
                     !isMouseInsideIceBar(appState: appState)
                 else {
@@ -707,10 +1449,10 @@ extension HIDEventManager {
             default:
                 return
             }
-        } else if isMouseInsideApplicationMenu(
+        } else if isMouseInsideApplicationMenuClickRegion(
             appState: appState,
             screen: screen
-        ) {
+        ) == true {
             return
         }
 
@@ -728,7 +1470,8 @@ extension HIDEventManager {
     ) {
         guard
             appState.settings.general.showOnScroll,
-            isMouseInsideMenuBar(appState: appState, screen: screen),
+            isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen),
+            !isCursorOverForeignWidgetUIElement(),
             let hiddenSection = appState.menuBarManager.section(
                 withName: .hidden
             )
@@ -749,12 +1492,16 @@ extension HIDEventManager {
 // MARK: - Helper Methods
 
 extension HIDEventManager {
-    /// Returns the best screen to use for event manager calculations.
+    /// Returns the best screen to use for hover, scroll, and tooltip calculations.
     ///
     /// Always returns the screen that currently owns the active menu bar.
     /// This prevents showing the hidden section or IceBar on a monitor
     /// whose menu bar is inactive (e.g. when another monitor has a
     /// fullscreen app), where clicking icons would have no effect.
+    ///
+    /// For mouse-down events, `mouseDownMonitor` resolves the screen from
+    /// `NSScreen.screenWithMouse` instead so that clicks on a secondary
+    /// display's menu bar are evaluated against the correct display geometry.
     func bestScreen(appState _: AppState) -> NSScreen? {
         NSScreen.screenWithActiveMenuBar ?? NSScreen.main
     }
@@ -884,10 +1631,39 @@ extension HIDEventManager {
         else {
             return false
         }
+        // Extend the frame left to the screen edge to cover the Apple menu.
         applicationMenuFrame.size.width +=
             applicationMenuFrame.origin.x - screen.frame.origin.x
         applicationMenuFrame.origin.x = screen.frame.origin.x
+        // Cap the right edge at the notch so locations over the notch are not
+        // counted as inside the application menu.
+        if let notch = screen.frameOfNotch {
+            let cappedMaxX = min(applicationMenuFrame.maxX, notch.minX)
+            applicationMenuFrame.size.width = cappedMaxX - applicationMenuFrame.origin.x
+        }
         return applicationMenuFrame.contains(mouseLocation)
+    }
+
+    /// Returns `true` when the current mouse location hits a cached menu bar item
+    /// bounds entry. This is the fast path used by hover/click hit testing.
+    private func isMouseInsideCachedMenuBarItem() -> Bool {
+        guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
+            return false
+        }
+
+        let entries = windowBoundsLock.withLock { $0 }
+        for entry in entries {
+            guard entry.bounds.contains(mouseLocation) else { continue }
+            // Verify window still exists — temporary items (screen recording,
+            // mic, camera indicators) can disappear without triggering a cache
+            // rebuild, leaving stale bounds in the lookup.
+            if let currentBounds = Bridging.getWindowBounds(for: entry.windowID),
+               currentBounds.contains(mouseLocation)
+            {
+                return true
+            }
+        }
+        return false
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
@@ -900,9 +1676,27 @@ extension HIDEventManager {
         // Use the pre-built bounds lookup table, which is rebuilt
         // whenever the item cache changes. This avoids per-event
         // IPC calls to the Window Server.
-        let entries = windowBoundsLock.withLock { $0 }
-        return entries.contains { entry in
-            entry.bounds.contains(mouseLocation)
+        let cacheHit = isMouseInsideCachedMenuBarItem()
+
+        // If we found a hit in the cache, return early.
+        if cacheHit {
+            return true
+        }
+
+        // If the cache missed, query the Window Server directly as a fallback.
+        // This handles the case where items were just shown and the cache
+        // hasn't been updated yet.
+        let windowIDs = Bridging.getMenuBarWindowList(option: [
+            .onScreen, .activeSpace, .itemsOnly,
+        ])
+        return windowIDs.contains { windowID in
+            guard let bounds = Bridging.getWindowBounds(for: windowID) else {
+                return false
+            }
+            guard bounds.width <= Self.maxReasonableItemWidth else {
+                return false
+            }
+            return bounds.contains(mouseLocation)
         }
     }
 
@@ -935,20 +1729,42 @@ extension HIDEventManager {
         }
 
         // Then perform expensive Window Server checks.
-        return !isMouseInsideApplicationMenu(appState: appState, screen: screen)
+        //
+        // Always exclude the concrete application-menu click region from empty-space
+        // detection; the function `isMouseInsideApplicationMenuClickRegion` checks whether
+        // the mouse is over a concrete menu item using AX hit-testing, while
+        // `handleApplicationMenuClickThrough` separately handles left-click forwarding
+        // to the application menu. When AX hit-testing is indeterminate (returns nil),
+        // fall back to cheap geometric detection to avoid misclassifying the app menu
+        // area as empty space.
+        let appMenuResult = isMouseInsideApplicationMenuClickRegion(
+            appState: appState,
+            screen: screen
+        )
+
+        // Use the AX result when available; fall back to geometric detection
+        // when hit-testing is indeterminate (e.g., due to expanded section-divider
+        // windows interfering with AX queries).
+        let isInAppMenu: Bool = if let result = appMenuResult {
+            result
+        } else {
+            isMouseInsideApplicationMenu(appState: appState, screen: screen)
+        }
+
+        return !isInAppMenu
             && !isMouseInsideMenuBarItem(appState: appState, screen: screen)
             && !isMouseInsideIceIcon(appState: appState)
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
-    /// the bounds of the Ice Bar panel.
+    /// the bounds of the Thaw Bar panel.
     func isMouseInsideIceBar(appState: AppState) -> Bool {
         guard let mouseLocation = MouseHelpers.locationAppKit else {
             return false
         }
         let panel = appState.menuBarManager.iceBarPanel
         // Pad the frame to be more forgiving if the user accidentally
-        // moves their mouse outside of the Ice Bar.
+        // moves their mouse outside of the Thaw Bar.
         let paddedFrame = panel.frame.insetBy(dx: -15, dy: -15)
         return paddedFrame.contains(mouseLocation)
     }
@@ -960,12 +1776,80 @@ extension HIDEventManager {
             let visibleSection = appState.menuBarManager.section(
                 withName: .visible
             ),
-            let iceIconFrame = visibleSection.controlItem.frame,
+            // Use the live window frame instead of the debounced controlItem.frame.
+            // controlItem.frame has a 50ms debounce and can be stale immediately
+            // after the context menu closes, causing hit-testing to incorrectly
+            // classify an icon click as empty-space and double-fire show/toggle.
+            let iceIconFrame = visibleSection.controlItem.window?.frame,
             let mouseLocation = MouseHelpers.locationAppKit
         else {
             return false
         }
         return iceIconFrame.contains(mouseLocation)
+    }
+
+    /// Returns whether the cursor is inside the same application-menu region
+    /// that the click-through path treats as belonging to the app menu.
+    /// Returns `nil` when the AX result is indeterminate (AX queries failed),
+    /// `true` when the cursor is inside a menu item, and `false` when AX
+    /// queries succeeded but no menu item contains the cursor.
+    private func isMouseInsideApplicationMenuClickRegion(
+        appState: AppState,
+        screen: NSScreen
+    ) -> Bool? {
+        guard
+            isMouseInsideMenuBar(appState: appState, screen: screen),
+            let mouseLocation = MouseHelpers.locationCoreGraphics
+        else {
+            return false
+        }
+
+        // Query AX to determine if the cursor is inside a menu item.
+        // Distinguish between "AX indeterminate" (nil) and "AX succeeded but no hit" (false).
+        guard
+            let frontApp = NSWorkspace.shared.menuBarOwningApplication,
+            let axApp = AXHelpers.application(for: frontApp),
+            let menuBar: UIElement = try? axApp.attribute(.menuBar)
+        else {
+            // AX is indeterminate - can't determine if we're in app menu.
+            return nil
+        }
+
+        // AX queries succeeded - check if cursor is inside any menu item.
+        for child in AXHelpers.children(for: menuBar) {
+            guard let frame = AXHelpers.frame(for: child) else {
+                continue
+            }
+            if frame.contains(mouseLocation) {
+                return true
+            }
+        }
+
+        // AX succeeded but cursor is not in any menu item.
+        return false
+    }
+
+    /// Returns the concrete application menu item frame at the given cursor
+    /// location, matching the menu item hit-testing used by click-through.
+    private func applicationMenuItemFrame(at mouseLocation: CGPoint) -> CGRect? {
+        guard
+            let frontApp = NSWorkspace.shared.menuBarOwningApplication,
+            let axApp = AXHelpers.application(for: frontApp),
+            let menuBar: UIElement = try? axApp.attribute(.menuBar)
+        else {
+            return nil
+        }
+
+        // Capture the frame during hit-testing to avoid a redundant AX read.
+        for child in AXHelpers.children(for: menuBar) {
+            guard let frame = AXHelpers.frame(for: child) else {
+                continue
+            }
+            if frame.contains(mouseLocation) {
+                return frame
+            }
+        }
+        return nil
     }
 }
 
@@ -977,6 +1861,9 @@ extension HIDEventManager {
 private protocol EventMonitorProtocol {
     func start()
     func stop()
+    /// Checks validity and restarts if needed. Returns `true` if running after call.
+    @discardableResult
+    func ensureRunning() -> Bool
 }
 
 extension EventMonitor: EventMonitorProtocol {}
@@ -988,5 +1875,16 @@ extension EventTap: EventMonitorProtocol {
 
     fileprivate func stop() {
         disable()
+    }
+
+    @discardableResult
+    fileprivate func ensureRunning() -> Bool {
+        if ensureValid() {
+            if !isEnabled {
+                enable()
+            }
+            return true
+        }
+        return false
     }
 }

@@ -17,7 +17,11 @@ struct LayoutBar: View {
             LayoutBarScrollView(appState: appState, section: section)
         }
 
-        func updateNSView(_: LayoutBarScrollView, context _: Context) {}
+        func updateNSView(_: LayoutBarScrollView, context _: Context) {
+            // Intentionally empty: `LayoutBarScrollView` wires itself to shared
+            // state during initialization, so subsequent updates arrive through
+            // its internal observers rather than SwiftUI's representable hook.
+        }
     }
 
     @EnvironmentObject var appState: AppState
@@ -26,11 +30,7 @@ struct LayoutBar: View {
     let section: MenuBarSection.Name
 
     private var backgroundShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 9, style: .circular)
-        }
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
     }
 
     var body: some View {

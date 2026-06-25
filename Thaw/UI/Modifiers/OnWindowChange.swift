@@ -9,7 +9,7 @@
 import SwiftUI
 
 private struct WindowReaderView: NSViewRepresentable {
-    private final class Represented: NSView {
+    final class Represented: NSView {
         var action: ((NSWindow?) -> Void)?
 
         override func viewDidMoveToWindow() {
@@ -25,13 +25,15 @@ private struct WindowReaderView: NSViewRepresentable {
 
     var action: (NSWindow?) -> Void
 
-    func makeNSView(context _: Context) -> NSView {
+    func makeNSView(context _: Context) -> Represented {
         let view = Represented()
         view.action = action
         return view
     }
 
-    func updateNSView(_: NSView, context _: Context) {}
+    func updateNSView(_ view: Represented, context _: Context) {
+        view.action = action
+    }
 }
 
 extension View {

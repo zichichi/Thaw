@@ -16,6 +16,14 @@ final class LayoutBarPaddingView: NSView {
     private let container: LayoutBarContainer
     private var isStabilizing = false
 
+    private var notchView: NotchIndicatorView?
+    private var notchWidthConstraint: NSLayoutConstraint?
+    private var notchTrailingConstraint: NSLayoutConstraint?
+    private var minWidthConstraint: NSLayoutConstraint?
+    private var containerLeadingAfterNotchConstraint: NSLayoutConstraint?
+    private var containerLeadingInsetConstraint: NSLayoutConstraint?
+    private var notchObservers = Set<AnyCancellable>()
+
     private func layoutWatchdogDuration() -> Duration? {
         switch MenuBarItemManager.layoutWatchdogTimeout {
         case let .seconds(s):
@@ -28,7 +36,7 @@ final class LayoutBarPaddingView: NSView {
     }
 
     /// The layout view's arranged views.
-    var arrangedViews: [LayoutBarItemView] {
+    var arrangedViews: [LayoutBarArrangedView] {
         get { container.arrangedViews }
         set { container.arrangedViews = newValue }
     }
@@ -46,13 +54,19 @@ final class LayoutBarPaddingView: NSView {
         addSubview(container)
         self.translatesAutoresizingMaskIntoConstraints = false
 
+        let leadingInsetConstraint = leadingAnchor.constraint(lessThanOrEqualTo: container.leadingAnchor, constant: -7.5)
+        self.containerLeadingInsetConstraint = leadingInsetConstraint
+
         NSLayoutConstraint.activate([
             container.centerYAnchor.constraint(equalTo: centerYAnchor),
             trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: 7.5),
-            leadingAnchor.constraint(lessThanOrEqualTo: container.leadingAnchor, constant: -7.5),
+            leadingInsetConstraint,
         ])
 
         registerForDraggedTypes([.layoutBarItem])
+
+        configureNotchObservers(appState: appState)
+        updateNotchPresentation()
     }
 
     @available(*, unavailable)
@@ -62,6 +76,12 @@ final class LayoutBarPaddingView: NSView {
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard !isStabilizing else { return [] }
+        // Freeze the destination's arrangedViews so that the cache refresh
+        // triggered while the system move is in flight cannot overwrite the
+        // mid-drag visual state. updateNewItemsPlacement at the end of move()
+        // depends on that state to capture the badge's new neighbors; without
+        // this guard the dropped item bounces to the wrong side of the badge.
+        container.canSetArrangedViews = false
         return container.updateArrangedViewsForDrag(with: sender, phase: .entered)
     }
 
@@ -83,18 +103,21 @@ final class LayoutBarPaddingView: NSView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let draggingSource = sender.draggingSource as? LayoutBarItemView else {
+        guard let draggingSource = sender.draggingSource as? LayoutBarArrangedView else {
             container.canSetArrangedViews = true
             return false
         }
 
-        if draggingSource.item.tag == .visibleControlItem && container.section != .visible {
+        if case let .item(draggingItem) = draggingSource.kind,
+           draggingItem.tag == .visibleControlItem,
+           container.section != .visible
+        {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = String(localized: "Cannot move \(Constants.displayName) icon.")
             alert.informativeText = String(localized: "The \(Constants.displayName) icon must always remain in the visible section.")
 
-            if let window = window {
+            if let window {
                 alert.beginSheetModal(for: window)
             }
 
@@ -107,37 +130,63 @@ final class LayoutBarPaddingView: NSView {
             return false
         }
 
+        if draggingSource.isNewItemsBadge {
+            let sourceContainer = draggingSource.oldContainerInfo?.container
+            container.appState?.itemManager.updateNewItemsPlacement(
+                section: container.section,
+                arrangedViews: arrangedViews
+            )
+            draggingSource.oldContainerInfo = nil
+            container.canSetArrangedViews = true
+            sourceContainer?.canSetArrangedViews = true
+            if let appState = container.appState {
+                sourceContainer?.setArrangedViews(items: appState.itemManager.itemCache.managedItems(for: sourceContainer?.section ?? container.section))
+                if sourceContainer !== container {
+                    container.setArrangedViews(items: appState.itemManager.itemCache.managedItems(for: container.section))
+                }
+            }
+            return true
+        }
+
         var willMove = false
+        let sourceContainer = draggingSource.oldContainerInfo?.container
 
         if let index = arrangedViews.firstIndex(of: draggingSource) {
             if arrangedViews.count == 1 {
                 willMove = true
                 Task {
-                    // dragging source is the only view in the layout bar, so we
-                    // need to find a target item
-                    let items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
-                    let targetItem: MenuBarItem? = switch container.section {
-                    case .visible: nil // visible section always has more than 1 item
-                    case .hidden: items.first(matching: .hiddenControlItem)
-                    case .alwaysHidden: items.first(matching: .alwaysHiddenControlItem)
+                    guard case let .item(item) = draggingSource.kind else {
+                        self.container.canSetArrangedViews = true
+                        sourceContainer?.canSetArrangedViews = true
+                        return
                     }
-                    if let targetItem {
-                        self.move(item: draggingSource.item, to: .leftOfItem(targetItem))
+                    if let destination = await self.liveFallbackDestinationForDraggedItem() {
+                        self.move(item: item, to: destination, sourceContainer: sourceContainer)
                     } else {
                         Self.diagLog.error("No target item for layout bar drag")
                         self.container.canSetArrangedViews = true
+                        sourceContainer?.canSetArrangedViews = true
                     }
                 }
-            } else if arrangedViews.indices.contains(index + 1) {
-                willMove = true
-                // we have a view to the right of the dragging source
-                let targetItem = arrangedViews[index + 1].item
-                move(item: draggingSource.item, to: .leftOfItem(targetItem))
-            } else if arrangedViews.indices.contains(index - 1) {
-                willMove = true
-                // we have a view to the left of the dragging source
-                let targetItem = arrangedViews[index - 1].item
-                move(item: draggingSource.item, to: .rightOfItem(targetItem))
+            } else if case let .item(item) = draggingSource.kind {
+                if let targetItem = nearestItem(toRightOf: index) {
+                    willMove = true
+                    move(item: item, to: .leftOfItem(targetItem), sourceContainer: sourceContainer)
+                } else if let targetItem = nearestItem(toLeftOf: index) {
+                    willMove = true
+                    move(item: item, to: .rightOfItem(targetItem), sourceContainer: sourceContainer)
+                } else if !arrangedViews.isEmpty {
+                    willMove = true
+                    Task {
+                        if let destination = await self.liveFallbackDestinationForDraggedItem() {
+                            self.move(item: item, to: destination, sourceContainer: sourceContainer)
+                        } else {
+                            Self.diagLog.error("No target item for layout bar drag")
+                            self.container.canSetArrangedViews = true
+                            sourceContainer?.canSetArrangedViews = true
+                        }
+                    }
+                }
             }
         }
 
@@ -150,7 +199,11 @@ final class LayoutBarPaddingView: NSView {
         return true
     }
 
-    private func move(item: MenuBarItem, to destination: MenuBarItemManager.MoveDestination) {
+    private func move(
+        item: MenuBarItem,
+        to destination: MenuBarItemManager.MoveDestination,
+        sourceContainer: LayoutBarContainer? = nil
+    ) {
         guard let appState = container.appState else {
             return
         }
@@ -158,19 +211,15 @@ final class LayoutBarPaddingView: NSView {
             guard !isStabilizing else { return }
             isStabilizing = true
             await MainActor.run { self.showOverlay(true) }
-            try await Task.sleep(for: .milliseconds(25))
+            // Increased delay to allow macOS to settle after operations like Reset Layout.
+            // Prevents transient errors when dragging items immediately after reset.
+            try await Task.sleep(for: .milliseconds(150))
 
             let watchdogTask = Task { [weak self, weak appState] in
                 guard let duration = self?.layoutWatchdogDuration() else { return }
                 try? await Task.sleep(for: duration + .seconds(1))
                 guard let self, !Task.isCancelled else { return }
-                await MainActor.run {
-                    if self.isStabilizing {
-                        self.isStabilizing = false
-                        self.showOverlay(false)
-                        self.container.canSetArrangedViews = true
-                    }
-                }
+                await self.resetStabilizingStateIfNeeded()
                 guard let appState else { return }
                 await appState.itemManager.cacheItemsRegardless(skipRecentMoveCheck: true)
                 await appState.imageCache.updateCacheWithoutChecks(sections: MenuBarSection.Name.allCases)
@@ -186,8 +235,27 @@ final class LayoutBarPaddingView: NSView {
                 await stabilizePlacement(of: item, to: destination, expectedSection: container.section, appState: appState)
             } catch {
                 Self.diagLog.error("Error moving menu bar item: \(error)")
-                let alert = NSAlert(error: error)
-                alert.runModal()
+                // The system event-driven move sometimes throws cannotComplete
+                // after macOS has already settled the item into the requested
+                // slot: the click sequence bounces the item past the target
+                // and back during verification, but a subsequent reconciliation
+                // lands it where the user asked. Resample the cache after a
+                // short settle window and only show the alert when the item
+                // is NOT in the position the user actually dragged it to;
+                // showing it for a move that visibly worked is a false alarm.
+                try? await Task.sleep(for: .milliseconds(250))
+                await appState.itemManager.cacheItemsRegardless(skipRecentMoveCheck: true)
+                if didItemReachIntendedPosition(
+                    item: item,
+                    destination: destination,
+                    expectedSection: container.section,
+                    cache: appState.itemManager.itemCache
+                ) {
+                    Self.diagLog.info("Move verification failed but \(item.logString) reached intended position in \(container.section.logString); suppressing alert")
+                } else {
+                    let alert = NSAlert(error: error)
+                    alert.runModal()
+                }
             }
             watchdogTask.cancel()
             if let appState = container.appState {
@@ -196,19 +264,113 @@ final class LayoutBarPaddingView: NSView {
             await MainActor.run {
                 self.isStabilizing = false
                 self.showOverlay(false)
-                // Re-enable view updates now that stabilization is complete,
-                // and force a refresh since updates were blocked during the move.
+                // Update the badge anchor BEFORE re-enabling view updates, using
+                // the current visual arrangement from the drag. This ensures the
+                // didSet refresh uses the correct anchor position.
+                // Only update if this section actually contains the badge.
+                if let appState = self.container.appState,
+                   self.containsNewItemsBadge()
+                {
+                    appState.itemManager.updateNewItemsPlacement(
+                        section: self.container.section,
+                        arrangedViews: self.container.arrangedViews
+                    )
+                }
+                // Re-enable view updates on both the destination (frozen by
+                // draggingEntered) and the source (frozen by willBeginAt on
+                // the dragging session). Without resetting the source, its
+                // arrangedViews would stay frozen at the mid-drag snapshot
+                // until the next drag originated from that container.
                 self.container.canSetArrangedViews = true
-                if let appState = self.container.appState {
-                    let items = appState.itemManager.itemCache.managedItems(for: self.container.section)
-                    self.container.setArrangedViews(items: items)
+                if sourceContainer !== self.container {
+                    sourceContainer?.canSetArrangedViews = true
                 }
             }
         }
     }
 
+    /// Returns true when the dragged item is sitting in the slot the user
+    /// asked for: in the destination section, immediately adjacent to the
+    /// target on the requested side. For control-item targets (section
+    /// dividers) there is no array entry to anchor against, so containment
+    /// in the destination section is the strongest claim we can make.
+    private func didItemReachIntendedPosition(
+        item: MenuBarItem,
+        destination: MenuBarItemManager.MoveDestination,
+        expectedSection: MenuBarSection.Name,
+        cache: MenuBarItemManager.ItemCache
+    ) -> Bool {
+        let sectionItems = cache[expectedSection]
+        guard let itemIndex = sectionItems.firstIndex(where: { $0.tag == item.tag }) else {
+            return false
+        }
+        let target = destination.targetItem
+        if target.isControlItem {
+            return true
+        }
+        guard let targetIndex = sectionItems.firstIndex(where: { $0.tag == target.tag }) else {
+            return false
+        }
+        return switch destination {
+        case .leftOfItem: itemIndex + 1 == targetIndex
+        case .rightOfItem: itemIndex == targetIndex + 1
+        }
+    }
+
+    @MainActor
+    private func resetStabilizingStateIfNeeded() async {
+        if isStabilizing {
+            isStabilizing = false
+            showOverlay(false)
+            container.canSetArrangedViews = true
+        }
+    }
+
     private func showOverlay(_ visible: Bool) {
         container.alphaValue = visible ? 0.6 : 1.0
+    }
+
+    private func containsNewItemsBadge() -> Bool {
+        for arrangedView in container.arrangedViews where arrangedView.isNewItemsBadge {
+            return true
+        }
+        return false
+    }
+
+    private func nearestItem(toRightOf index: Int) -> MenuBarItem? {
+        guard arrangedViews.indices.contains(index + 1) else {
+            return nil
+        }
+        for candidateIndex in (index + 1) ..< arrangedViews.count {
+            if case let .item(item) = arrangedViews[candidateIndex].kind {
+                return item
+            }
+        }
+        return nil
+    }
+
+    private func nearestItem(toLeftOf index: Int) -> MenuBarItem? {
+        guard arrangedViews.indices.contains(index - 1) else {
+            return nil
+        }
+        for candidateIndex in stride(from: index - 1, through: 0, by: -1) {
+            if case let .item(item) = arrangedViews[candidateIndex].kind {
+                return item
+            }
+        }
+        return nil
+    }
+
+    private func liveFallbackDestinationForDraggedItem() async -> MenuBarItemManager.MoveDestination? {
+        let items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+        return switch container.section {
+        case .visible:
+            nil
+        case .hidden:
+            items.first(matching: .hiddenControlItem).map { .leftOfItem($0) }
+        case .alwaysHidden:
+            items.first(matching: .alwaysHiddenControlItem).map { .leftOfItem($0) }
+        }
     }
 
     /// Ensures the dragged item remains in the intended section and its icon appears.
@@ -246,5 +408,135 @@ final class LayoutBarPaddingView: NSView {
             appState.imageCache.performCacheCleanup()
         }
         await appState.imageCache.updateCacheWithoutChecks(sections: MenuBarSection.Name.allCases)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            updateNotchPresentation()
+        }
+    }
+
+    private func configureNotchObservers(appState: AppState) {
+        guard container.section == .visible else {
+            return
+        }
+
+        NotificationCenter.default
+            .publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateNotchPresentation()
+            }
+            .store(in: &notchObservers)
+
+        NotificationCenter.default
+            .publisher(for: NSWindow.didChangeScreenNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self,
+                      let notifyingWindow = notification.object as? NSWindow,
+                      notifyingWindow === self.window
+                else { return }
+                self.updateNotchPresentation()
+            }
+            .store(in: &notchObservers)
+
+        appState.menuBarManager.$averageColorInfo
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] colorInfo in
+                self?.notchView?.averageColorInfo = colorInfo
+            }
+            .store(in: &notchObservers)
+    }
+
+    private func updateNotchPresentation() {
+        guard
+            container.section == .visible,
+            let screen = NSScreen.screenWithActiveMenuBar ?? NSScreen.main,
+            screen.hasNotch,
+            let notch = screen.frameOfNotch
+        else {
+            tearDownNotchPresentation()
+            return
+        }
+
+        let notchIndicatorWidth = notch.width + MenuBarSection.notchGap
+        // Distance from the bar's trailing edge to the notch indicator's
+        // trailing edge — equals the real-world items area (everything
+        // right of `notch.maxX + notchGap` in the menu bar) plus the 7.5pt
+        // cosmetic inset that sits between items and the rounded edge.
+        let notchTrailingOffset = max(0, screen.frame.maxX - notch.maxX - MenuBarSection.notchGap) + 7.5
+        // Bar must always be wide enough to represent the real-world span
+        // from `notch.minX` to `screen.maxX`, with no inset on the left
+        // (the notch itself sits flush) and 7.5pt cosmetic inset on the
+        // right. When the Settings pane is wider, the bar grows past this
+        // and the empty area is shown to the LEFT of the notch.
+        let barMinWidth = max(0, screen.frame.maxX - notch.minX) + 7.5
+        let colorInfo = container.appState?.menuBarManager.averageColorInfo
+
+        if let notchView {
+            notchView.isHidden = false
+            notchView.averageColorInfo = colorInfo
+            notchWidthConstraint?.constant = notchIndicatorWidth
+            notchTrailingConstraint?.constant = -notchTrailingOffset
+            minWidthConstraint?.constant = barMinWidth
+            containerLeadingInsetConstraint?.constant = 0
+            return
+        }
+
+        let view = NotchIndicatorView(averageColorInfo: colorInfo)
+        addSubview(view, positioned: .below, relativeTo: container)
+        self.notchView = view
+
+        let widthConstraint = view.widthAnchor.constraint(equalToConstant: notchIndicatorWidth)
+        let trailingConstraint = view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -notchTrailingOffset)
+        // Lower priority so the bar can grow leftward when the user has
+        // more items than fit between the notch and the bar's trailing
+        // edge. With this at .required, container.leading is hard-pinned
+        // at notchView.trailing, the container's slot is fixed in width,
+        // and overflowing items get clipped without ever pushing the
+        // documentView wider than the scroll view's visible area, so no
+        // horizontal scrollbar appears. Dropping to .defaultHigh keeps
+        // the notch as the preferred boundary while letting AutoLayout
+        // break it when items need more room — paddingView then extends
+        // further left (via the existing leading inset constraint),
+        // NSScrollView observes documentView wider than visible and
+        // surfaces the horizontal scroller. The container is z-above
+        // notchView, so items rendered over the notch indicator stay
+        // draggable.
+        let containerLeading = container.leadingAnchor.constraint(greaterThanOrEqualTo: view.trailingAnchor)
+        containerLeading.priority = .defaultHigh
+        let minWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: barMinWidth)
+
+        NSLayoutConstraint.activate([
+            trailingConstraint,
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor),
+            widthConstraint,
+            containerLeading,
+            minWidth,
+        ])
+
+        notchWidthConstraint = widthConstraint
+        notchTrailingConstraint = trailingConstraint
+        containerLeadingAfterNotchConstraint = containerLeading
+        minWidthConstraint = minWidth
+        containerLeadingInsetConstraint?.constant = 0
+    }
+
+    private func tearDownNotchPresentation() {
+        notchWidthConstraint?.isActive = false
+        notchTrailingConstraint?.isActive = false
+        containerLeadingAfterNotchConstraint?.isActive = false
+        minWidthConstraint?.isActive = false
+        notchWidthConstraint = nil
+        notchTrailingConstraint = nil
+        containerLeadingAfterNotchConstraint = nil
+        minWidthConstraint = nil
+        containerLeadingInsetConstraint?.constant = -7.5
+        notchView?.removeFromSuperview()
+        notchView = nil
     }
 }

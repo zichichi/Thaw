@@ -8,7 +8,6 @@
 
 import Combine
 import CoreGraphics
-import Darwin.Mach
 import SwiftUI
 
 /// The model for app-wide state.
@@ -50,6 +49,9 @@ final class AppState: ObservableObject {
     /// Manager for input events received by the app.
     let hidEventManager = HIDEventManager()
 
+    /// Manager for settings profiles.
+    let profileManager = ProfileManager()
+
     /// Manager for app updates.
     let updatesManager = UpdatesManager()
 
@@ -62,9 +64,6 @@ final class AppState: ObservableObject {
     /// Track open windows to prevent duplicates
     private var openWindows = Set<IceWindowIdentifier>()
 
-    /// The background task for periodic memory monitoring.
-    private var memoryMonitoringTask: Task<Void, Never>?
-
     /// Track last known screen count to detect disconnects.
     private var lastKnownScreenCount = NSScreen.screens.count
 
@@ -74,12 +73,16 @@ final class AppState: ObservableObject {
     /// Diagnostic logger for the app state.
     let diagLog = DiagLog(category: "AppState")
 
-    /// Async setup actions, run once on first access.
-    private lazy var setupTask = Task {
-        // Enable diagnostic logging early if the user had it enabled
-        if Defaults.bool(forKey: .enableDiagnosticLogging) {
+    private lazy var setupTask = Task { @MainActor in
+        #if DEBUG
+            // Debug builds always have diagnostic logging on so logs are
+            // captured during development without depending on the toggle.
             DiagnosticLogger.shared.isEnabled = true
-        }
+        #else
+            if Defaults.bool(forKey: .enableDiagnosticLogging) {
+                DiagnosticLogger.shared.isEnabled = true
+            }
+        #endif
 
         diagLog.debug("setupTask: starting AppState setup sequence")
         permissions.stopAllChecks()
@@ -89,28 +92,24 @@ final class AppState: ObservableObject {
         menuBarManager.performSetup(with: self)
         diagLog.debug("setupTask: settings and menuBarManager setup complete")
 
-        if #available(macOS 26.0, *) {
-            diagLog.debug("setupTask: starting MenuBarItemService XPC connection (macOS 26+)")
-            await MenuBarItemService.Connection.shared.start()
-            diagLog.debug("setupTask: MenuBarItemService XPC connection started")
-        } else {
-            diagLog.debug("setupTask: skipping MenuBarItemService XPC (pre-macOS 26)")
-        }
+        diagLog.debug("setupTask: starting MenuBarItemService XPC connection")
+        await MenuBarItemService.Connection.shared.start()
+        diagLog.debug("setupTask: MenuBarItemService XPC connection started")
 
         appearanceManager.performSetup(with: self)
         hidEventManager.performSetup(with: self)
         diagLog.debug("setupTask: starting itemManager setup")
         await itemManager.performSetup(with: self)
-        diagLog.debug("setupTask: itemManager setup complete, starting imageCache setup")
+        diagLog.debug("setupTask: itemManager setup scheduled, invalidating menuBarHeightCache")
+        NSScreen.invalidateMenuBarHeightCache()
+        diagLog.debug("setupTask: starting imageCache setup")
         imageCache.performSetup(with: self)
         diagLog.debug("setupTask: imageCache setup complete")
         updatesManager.performSetup(with: self)
         userNotificationManager.performSetup(with: self)
+        profileManager.performSetup(with: self)
 
         configureCancellables()
-
-        // Start memory monitoring
-        startMemoryMonitoring()
         diagLog.debug("setupTask: AppState setup sequence complete")
     }
 
@@ -119,69 +118,13 @@ final class AppState: ObservableObject {
         updatesManager.startUpdaterIfNeeded()
     }
 
-    /// Starts periodic memory monitoring to track all memory usage.
-    private func startMemoryMonitoring() {
-        memoryMonitoringTask?.cancel()
-        memoryMonitoringTask = Task {
-            let formatter = ISO8601DateFormatter()
-            do {
-                while true {
-                    let memoryUsage = getMemoryInfo()
-                    let timestamp = formatter.string(from: Date())
-
-                    // Always log memory usage, not just high usage
-                    diagLog.info("Memory usage at \(timestamp): \(memoryUsage / 1024 / 1024)MB")
-
-                    // Log warnings for specific conditions
-                    let memoryWarningThreshold: Int64 = 500 * 1024 * 1024 // 500MB
-                    if memoryUsage > memoryWarningThreshold {
-                        diagLog.warning("High memory usage detected: \(memoryUsage / 1024 / 1024)MB")
-                    }
-
-                    // Log component sizes for debugging — no MainActor.run needed
-                    // as AppState is already @MainActor isolated.
-                    let imageCount = imageCache.images.count
-                    let windowCount = openWindows.count
-
-                    if imageCount > 20 {
-                        diagLog.warning("Large image cache: \(imageCount) items")
-                    }
-                    if windowCount > 5 {
-                        diagLog.warning("Many open windows: \(windowCount)")
-                    }
-
-                    try await Task.sleep(for: .seconds(300))
-                }
-            } catch {
-                // CancellationError — task was cancelled, exit cleanly.
-            }
-        }
-    }
-
-    /// Dismisses the window with the given identifier.
     func dismissWindow(_ id: IceWindowIdentifier) {
-        // Async prevents conflicts with SwiftUI.
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
             self.openWindows.remove(id)
             self.diagLog.debug("Dismissing window with id: \(id)")
             EnvironmentValues().dismissWindow(id: id)
         }
-    }
-
-    /// Gets the memory footprint of the task.
-    private func getMemoryInfo() -> Int64 {
-        var info = task_vm_info_data_t()
-        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / UInt32(MemoryLayout<integer_t>.size)
-        let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
-            }
-        }
-        guard kerr == KERN_SUCCESS else {
-            return 0
-        }
-        return Int64(info.phys_footprint)
     }
 
     /// Performs app state setup.
@@ -338,13 +281,27 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 defer { self.lastKnownScreenCount = count }
                 if count < self.lastKnownScreenCount {
-                    self.diagLog.info("Detected display disconnect; state will be refreshed automatically")
-                    // App restart disabled - memory leak fixes allow dynamic display handling
-                    // self.restartSelf()
+                    self.diagLog.info("Display disconnected: refresh item cache + cleanup image cache")
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        // Force item cache rebuild so displayID reflects current
+                        // display geometry (items moved to remaining display).
+                        await self.itemManager.cacheItemsRegardless(skipRecentMoveCheck: true)
+                        // Force image cache: remove entries for items no longer
+                        // present, trigger re-capture for current display.
+                        self.imageCache.performCacheCleanup()
+                        await self.imageCache.updateCacheWithoutChecks(sections: MenuBarSection.Name.allCases)
+                        self.diagLog.info("Cache refresh complete after display disconnect")
+                    }
                 } else if count > self.lastKnownScreenCount {
-                    self.diagLog.info("Detected display connect; state will be refreshed automatically")
-                    // App restart disabled - memory leak fixes allow dynamic display handling
-                    // self.restartSelf()
+                    self.diagLog.info("Display connected: refresh item cache")
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        // Items keep their windowIDs when moving to new display.
+                        // Item cache rebuild picks up new items on the added display.
+                        await self.itemManager.cacheItemsRegardless(skipRecentMoveCheck: true)
+                        self.diagLog.info("Item cache refreshed after display connect")
+                    }
                 }
             }
             .store(in: &c)
@@ -353,29 +310,27 @@ final class AppState: ObservableObject {
     }
 
     /// Relaunches the current app instance silently.
-    private func restartSelf() {
+    func restartSelf() {
         guard !isRestarting else { return }
         isRestarting = true
 
-        Task { @MainActor [diagLog] in
-            // Save image cache to disk before restarting so new instance can load it
-            imageCache.saveToDisk()
+        // Save image cache to disk before restarting so new instance can load it
+        imageCache.saveToDisk()
 
-            let config = NSWorkspace.OpenConfiguration()
-            config.activates = false
-            config.addsToRecentItems = false
-            config.createsNewApplicationInstance = true
-            config.promptsUserIfNeeded = false
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = false
+        config.addsToRecentItems = false
+        config.createsNewApplicationInstance = true
+        config.promptsUserIfNeeded = false
 
-            if let url = Bundle.main.bundleURL as URL? {
-                do {
-                    _ = try await NSWorkspace.shared.openApplication(at: url, configuration: config)
-                    try? await Task.sleep(for: .milliseconds(300))
-                    NSApp.terminate(nil)
-                } catch {
-                    diagLog.error("Failed to relaunch app: \(error.localizedDescription)")
-                    isRestarting = false
-                }
+        Task { @MainActor in
+            do {
+                _ = try await NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config)
+                try? await Task.sleep(for: .milliseconds(500))
+                exit(0)
+            } catch {
+                diagLog.error("Failed to relaunch app: \(error.localizedDescription)")
+                isRestarting = false
             }
         }
     }
@@ -399,16 +354,12 @@ final class AppState: ObservableObject {
             }
     }
 
-    /// Opens the window with the given identifier.
     func openWindow(_ id: IceWindowIdentifier) {
-        // Async prevents conflicts with SwiftUI.
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
 
-            // Check if window is already open to prevent recreation
             if self.openWindows.contains(id) {
                 self.diagLog.debug("Window \(id) already open, activating existing window")
-                // If window already exists, just activate it
                 self.activate(withPolicy: .regular)
                 return
             }
@@ -417,29 +368,24 @@ final class AppState: ObservableObject {
             self.diagLog.debug("Opening window with id: \(id)")
             EnvironmentValues().openWindow(id: id)
 
-            // Ensure activation after window opens
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.activate(withPolicy: .regular)
-            }
+            try? await Task.sleep(for: .milliseconds(100))
+            self.activate(withPolicy: .regular)
         }
     }
 
-    /// Activates the app and sets its activation policy.
     func activate(withPolicy policy: NSApplication.ActivationPolicy? = nil) {
         if let policy {
             NSApp.setActivationPolicy(policy)
         }
 
-        // Force activation and bring to front
         NSApp.activate(ignoringOtherApps: true)
 
-        // Also try through NSRunningApplication as fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
             guard let frontmost = NSWorkspace.shared.frontmostApplication else {
                 NSRunningApplication.current.activate()
                 return
             }
-
             NSRunningApplication.current.activate(from: frontmost)
         }
     }

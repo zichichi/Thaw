@@ -3,14 +3,20 @@
     <h1>Thaw</h1>
 </div>
 
-Thaw is a powerful menu bar management tool. While its primary function is hiding and showing menu bar items, it aims to cover a wide variety of additional features to make it one of the most versatile menu bar tools available.
+Thaw is a powerful menu bar management tool for macOS 26. While its primary function is hiding and showing menu bar items, it aims to cover a wide variety of additional features to make it one of the most versatile menu bar tools available.
+
+<div align="center">
+<a href="https://trendshift.io/repositories/21173" target="_blank"><img src="https://trendshift.io/api/badge/repositories/21173" alt="stonerl%2FThaw | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</div>
+
+<br>
 
 ![thaw-banner](https://github.com/user-attachments/assets/9584065d-f840-4545-9a42-cfc5534b5ac3)
 
 [![Download](https://img.shields.io/badge/download-latest-brightgreen?style=flat-square)](https://github.com/stonerl/Thaw/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/stonerl/Thaw/ci.yml?style=flat-square)](https://github.com/stonerl/Thaw/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS-blue?style=flat-square)
-![Requirements](https://img.shields.io/badge/requirements-macOS%2014%2B-fa4e49?style=flat-square)
+![Requirements](https://img.shields.io/badge/requirements-macOS%2026%2B-fa4e49?style=flat-square)
 [![Sponsor](https://img.shields.io/badge/Sponsor%20%E2%9D%A4%EF%B8%8F-8A2BE2?style=flat-square)](https://github.com/sponsors/stonerl)
 [![Discord](https://img.shields.io/badge/Discord-7289DA?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/5cnKkKbMFd)
 [![License](https://img.shields.io/github/license/stonerl/Thaw?style=flat-square)](LICENSE)
@@ -46,117 +52,110 @@ Thaw is currently available in the following languages:
 <table frame="void" rules="none">
     <tr>
         <th align="left">Language</th>
-        <th align="left">Status</th>
         <th align="center">Flag</th>
-        <th align="left">Completion</th>
+        <th align="left">Translation</th>
         <th width="30"></th>
         <th align="left">Language</th>
-        <th align="left">Status</th>
         <th align="center">Flag</th>
-        <th align="left">Completion</th>
-    </tr>
-    <tr>
-        <td><b>English</b></td>
-        <td>Base</td>
-        <td align="center">🇬🇧/🇺🇸</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
-        <td></td>
-        <td><b>Português (Brasil)(*)</b></td>
-        <td>Complete</td>
-        <td align="center">🇧🇷</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <th align="left">Translation</th>
     </tr>
     <tr>
         <td><b>Bahasa Indonesia</b></td>
-        <td>Complete</td>
         <td align="center">🇮🇩</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><img alt="id translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=id&style=flat-square&logo=crowdin&query=%24.progress.5.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
         <td></td>
-        <td><b>Русский(*)</b></td>
-        <td>Complete</td>
-        <td align="center">🇷🇺</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><b>Čeština</b></td>
+        <td align="center">🇨🇿</td>
+        <td><img alt="cs translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=cs&style=flat-square&logo=crowdin&query=%24.progress.0.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
     </tr>
     <tr>
         <td><b>Deutsch</b></td>
-        <td>Complete</td>
         <td align="center">🇩🇪/🇦🇹</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><img alt="de translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=de&style=flat-square&logo=crowdin&query=%24.progress.1.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
         <td></td>
-        <td><b>简体中文</b></td>
-        <td>Complete</td>
-        <td align="center">🇨🇳</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><b>English</b></td>
+        <td align="center">🇬🇧/🇺🇸</td>
+        <td><img src="https://img.shields.io/badge/100%25-blue?style=flat-square" /></td>
     </tr>
     <tr>
         <td><b>Español</b></td>
-        <td>Complete</td>
         <td align="center">🇪🇸/🇲🇽</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><img alt="es-ES translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=es-ES&style=flat-square&logo=crowdin&query=%24.progress.2.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
         <td></td>
-        <td><b>正體中文</b></td>
-        <td>Complete</td>
-        <td align="center">🇹🇼</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
-    </tr>
-    <tr>
         <td><b>Français</b></td>
-        <td>Complete</td>
         <td align="center">🇫🇷</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
-        <td></td>
-        <td><b>한국어</b></td>
-        <td>Complete</td>
-        <td align="center">🇰🇷</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><img alt="fr translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=fr&style=flat-square&logo=crowdin&query=%24.progress.3.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
     </tr>
     <tr>
         <td><b>Italiano</b></td>
-        <td>Complete</td>
         <td align="center">🇮🇹</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><img alt="it translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=it&style=flat-square&logo=crowdin&query=%24.progress.6.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
         <td></td>
-        <td><b>ภาษาไทย</b></td>
-        <td>Complete</td>
-        <td align="center">🇹🇭</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><b>日本語</b></td>
+        <td align="center">🇯🇵</td>
+        <td><img alt="ja translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=ja&style=flat-square&logo=crowdin&query=%24.progress.7.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
     </tr>
     <tr>
-        <td><b>Magyar</b></td>
-        <td>Complete</td>
-        <td align="center">🇭🇺</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><b>한국어</b></td>
+        <td align="center">🇰🇷</td>
+        <td><img alt="ko translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=ko&style=flat-square&logo=crowdin&query=%24.progress.8.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
         <td></td>
-        <td><b>Türkçe(*)</b></td>
-        <td>Complete</td>
-        <td align="center">🇹🇷</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><b>Magyar</b></td>
+        <td align="center">🇭🇺</td>
+        <td><img alt="hu translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=hu&style=flat-square&logo=crowdin&query=%24.progress.4.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
     </tr>
     <tr>
         <td><b>Nederlands</b></td>
-        <td>Complete</td>
         <td align="center">🇳🇱/🇧🇪</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><img alt="nl translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=nl&style=flat-square&logo=crowdin&query=%24.progress.9.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
         <td></td>
-        <td><b>日本語(*)</b></td>
-        <td>Complete</td>
-        <td align="center">🇯🇵</td>
-        <td><img src="https://geps.dev/progress/100" /></td>
+        <td><b>Português (Brasil)</b></td>
+        <td align="center">🇧🇷</td>
+        <td><img alt="pt-BR translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=pt-BR&style=flat-square&logo=crowdin&query=%24.progress.11.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
+    </tr>
+    <tr>
+        <td><b>Русский</b></td>
+        <td align="center">🇷🇺</td>
+        <td><img alt="ru translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=ru&style=flat-square&logo=crowdin&query=%24.progress.12.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
+        <td></td>
+        <td><b>简体中文</b></td>
+        <td align="center">🇨🇳</td>
+        <td><img alt="zh-CN translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=zh-CN&style=flat-square&logo=crowdin&query=%24.progress.17.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
+    </tr>
+    <tr>
+        <td><b>正體中文</b></td>
+        <td align="center">🇹🇼</td>
+        <td><img alt="zh-TW translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=zh-TW&style=flat-square&logo=crowdin&query=%24.progress.18.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
+        <td></td>
+        <td><b>ภาษาไทย</b></td>
+        <td align="center">🇹🇭</td>
+        <td><img alt="th translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=th&style=flat-square&logo=crowdin&query=%24.progress.13.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
+    </tr>
+    <tr>
+        <td><b>Polski</b></td>
+        <td align="center">🇵🇱</td>
+        <td><img alt="pl translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=pl&style=flat-square&logo=crowdin&query=%24.progress.10.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
+        <td></td>
+        <td><b>Türkçe</b></td>
+        <td align="center">🇹🇷</td>
+        <td><img alt="tr translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=tr&style=flat-square&logo=crowdin&query=%24.progress.14.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
+    </tr>
+    <tr>
+        <td><b>Українська(*)</b></td>
+        <td align="center">🇺🇦</td>
+        <td><img alt="uk translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=uk&style=flat-square&logo=crowdin&query=%24.progress.15.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
+        <td></td>
+        <td><b>Tiếng Việt(*)</b></td>
+        <td align="center">🇻🇳</td>
+        <td><img alt="vi translation" src="https://img.shields.io/badge/dynamic/json?color=blue&label=vi&style=flat-square&logo=crowdin&query=%24.progress.16.data.translationProgress&url=https%3A%2F%2Fbadges.awesome-crowdin.com%2Fstats-12858911-889934.json" /></td>
     </tr>
 </table>
 
 _Note: languages marked with (\*) are currently only available in the development branch._
 
-### Help Translate Thaw
+Help translate Thaw via [Crowdin](https://crowdin.com/project/thaw)
 
-If you want to help translate Thaw into your language or improve existing ones, you'll need the latest version of Xcode.
-
-1. Open `Thaw.xcodeproj` in Xcode 16.4 or later.
-2. Navigate to `Thaw -> Resources -> Localizable.xcstrings`.
-3. Add a new language using the **+** button at the bottom or update existing strings.
-4. Submit a Pull Request with your changes!
-
-_Note: You can see the exact completion percentage for each language directly in the Xcode String Catalog editor._
+If a language you'd like to help to translate is not listed here, let us know and we will add it on Crowdin. 
 
 ## Features/Roadmap
 
@@ -176,7 +175,7 @@ _Note: You can see the exact completion percentage for each language directly in
 - [x] Display hidden menu bar items in a separate bar (e.g. for MacBooks with the notch)
 - [x] Search menu bar items
 - [x] Menu bar item spacing (BETA)
-- [ ] Profiles for menu bar layout
+- [x] Profiles for menu bar layout
 - [ ] Individual spacer items
 - [ ] Menu bar item groups
 - [ ] Show menu bar items when trigger conditions are met
@@ -187,9 +186,9 @@ _Note: You can see the exact completion percentage for each language directly in
 - [x] Menu bar shadow
 - [x] Menu bar border
 - [x] Custom menu bar shapes (rounded and/or split)
-- [ ] Remove background behind menu bar
+- [x] Remove background behind menu bar (macOS setting)
 - [ ] Rounded screen corners
-- [ ] Different settings for light/dark mode
+- [x] Different settings for light/dark mode
 
 ### Hotkeys
 
@@ -208,10 +207,6 @@ _Note: You can see the exact completion percentage for each language directly in
 - [ ] Menu bar widgets
 
 </details>
-
-## Why does Thaw only support macOS 14 and later?
-
-Thaw uses a number of system APIs that are available starting in macOS 14. As such, there are no plans to support earlier versions of macOS.
 
 ## Gallery
 

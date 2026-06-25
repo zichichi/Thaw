@@ -13,8 +13,10 @@ import Foundation
 enum MouseHelpers {
     private static let diagLog = DiagLog(category: "MouseHelpers")
     private static let cursorLock = DispatchQueue(label: "MouseHelpers.cursorLock")
-    private static var cursorHideCount = 0
-    private static var autoShowWorkItem: DispatchWorkItem?
+    /// Protected by `cursorLock` — all accesses go through `cursorLock.sync`.
+    private static nonisolated(unsafe) var cursorHideCount = 0
+    /// Protected by `cursorLock` — all accesses go through `cursorLock.sync`.
+    private static nonisolated(unsafe) var autoShowWorkItem: DispatchWorkItem?
     private static let defaultWatchdogTimeout: DispatchTimeInterval = .seconds(1)
 
     private static func formattedTimeout(_ interval: DispatchTimeInterval) -> String {
@@ -38,15 +40,19 @@ enum MouseHelpers {
         let workItem = DispatchWorkItem {
             forceShowCursor(reason: "watchdog timeout")
         }
-        autoShowWorkItem?.cancel()
-        autoShowWorkItem = workItem
+        cursorLock.sync {
+            autoShowWorkItem?.cancel()
+            autoShowWorkItem = workItem
+        }
         diagLog.debug("Cursor watchdog scheduled for \(formattedTimeout(timeout))")
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: workItem)
     }
 
     private static func cancelAutoShow() {
-        autoShowWorkItem?.cancel()
-        autoShowWorkItem = nil
+        cursorLock.sync {
+            autoShowWorkItem?.cancel()
+            autoShowWorkItem = nil
+        }
     }
 
     private static func forceShowCursor(reason: String) {
@@ -130,7 +136,23 @@ enum MouseHelpers {
     static func warpCursor(to point: CGPoint) {
         let result = CGWarpMouseCursorPosition(point)
         if result != .success {
-            diagLog.error("CGWarpMouseCursorPosition failed with error code \(result.rawValue)")
+            diagLog.warning("CGWarpMouseCursorPosition failed (error: \(result.rawValue)), falling back to CGEvent mouseMoved")
+            // Posting a mouseMoved event is more reliable than warp when a
+            // menu is tracking the cursor — the event updates the cursor
+            // position in the Window Server even if warp is blocked.
+            guard
+                let source = CGEventSource(stateID: .hidSystemState),
+                let event = CGEvent(
+                    mouseEventSource: source,
+                    mouseType: .mouseMoved,
+                    mouseCursorPosition: point,
+                    mouseButton: .left
+                )
+            else {
+                diagLog.error("Failed to create fallback mouseMoved event")
+                return
+            }
+            event.post(tap: .cghidEventTap)
         }
     }
 

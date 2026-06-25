@@ -47,14 +47,13 @@ struct IceForm<Content: View>: View {
         GeometryReader { geometry in
             ScrollView {
                 contentLayout.frame(
-                    maxWidth: geometry.size.width,
+                    minWidth: geometry.size.width,
                     minHeight: geometry.size.height,
                     alignment: .top
                 )
             }
+            .background(Color.clear)
             .scrollContentBackground(.hidden)
-            .scrollIndicatorsFlash(onAppear: true)
-            .scrollDisabled(contentFrame.height > 0 && contentFrame.height <= geometry.size.height)
         }
         .focusSection()
         .accessibilityElement(children: .contain)
@@ -63,9 +62,9 @@ struct IceForm<Content: View>: View {
     private var contentLayout: some View {
         VStack(alignment: alignment, spacing: spacing) {
             content
-                .labeledContentStyle(IceFormLabeledContentStyle())
-                .toggleStyle(IceFormToggleStyle())
         }
+        .labeledContentStyle(IceFormLabeledContentStyle())
+        .toggleStyle(IceFormToggleStyle())
         .padding(padding)
         .onFrameChange(update: $contentFrame)
     }
@@ -94,16 +93,10 @@ private struct IceFormToggleStyle: ToggleStyle {
 
 extension EdgeInsets {
     /// The default padding for an ``IceForm``.
-    static let iceFormDefaultPadding: EdgeInsets = {
-        var insets = EdgeInsets(all: 20)
-        if #available(macOS 26.0, *) {
-            insets.top = 0
-        }
-        return insets
-    }()
+    static let iceFormDefaultPadding: EdgeInsets = .init(top: 0, leading: 20, bottom: 20, trailing: 20)
 }
 
 extension CGFloat {
     /// The default spacing for an ``IceForm``.
-    static let iceFormDefaultSpacing: CGFloat = 10
+    static let iceFormDefaultSpacing: CGFloat = 24
 }

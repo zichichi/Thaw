@@ -12,8 +12,11 @@ import SwiftUI
 /// Manager for the state of the menu bar.
 @MainActor
 final class MenuBarManager: ObservableObject {
-    /// Information for the menu bar's average color.
+    /// Information for the menu bar's average color on the active screen.
     @Published private(set) var averageColorInfo: MenuBarAverageColorInfo?
+
+    /// Per-screen average colors for multi-monitor adaptive backgrounds.
+    @Published private(set) var averageColors: [CGDirectDisplayID: MenuBarAverageColorInfo] = [:]
 
     /// A Boolean value that indicates whether the menu bar is either always hidden
     /// by the system, or automatically hidden and shown by the system based on the
@@ -45,6 +48,19 @@ final class MenuBarManager: ObservableObject {
     /// Cancellable for the periodic average-color refresh, active only while settings is visible.
     private var averageColorRefreshCancellable: AnyCancellable?
 
+    /// Cancellable for the periodic average-color refresh when adaptive background is active.
+    private var adaptiveColorRefreshCancellable: AnyCancellable?
+
+    /// Per-screen colors cached before sleep, restored on wake to avoid stale/white flash.
+    private var sleepColorCache: [CGDirectDisplayID: MenuBarAverageColorInfo]?
+
+    /// Polling state for adaptive wake stabilization.
+    private var wakePollTimer: AnyCancellable?
+    private var wakePollPrevColors: [CGDirectDisplayID: MenuBarAverageColorInfo]?
+    private var wakePollStableCount = 0
+    private var wakePollDidChange = false
+    private var wakePollStartTime: Date?
+
     /// A Boolean value that indicates whether the application menus are hidden.
     private var isHidingApplicationMenus = false
 
@@ -52,7 +68,7 @@ final class MenuBarManager: ObservableObject {
     /// by a manual toggle (URL/hotkey), rather than automatically by section state.
     private var isManuallyHidingApplicationMenus = false
 
-    /// The panel that contains the Ice Bar interface.
+    /// The panel that contains the Thaw Bar interface.
     let iceBarPanel = IceBarPanel()
 
     /// The panel that contains the menu bar search interface.
@@ -109,7 +125,7 @@ final class MenuBarManager: ObservableObject {
             let window = hiddenSection.controlItem.window
         {
             window.publisher(for: \.frame)
-                .map { $0.origin.y }
+                .map(\.origin.y)
                 .removeDuplicates()
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
@@ -126,6 +142,11 @@ final class MenuBarManager: ObservableObject {
 
         // Handle the `focusedApp` and `smart` rehide strategies.
         NSWorkspace.shared.publisher(for: \.frontmostApplication)
+            // Ignore the initial value during app startup. Treating the
+            // current frontmost app as a "focus change" immediately on launch
+            // triggers an expensive menu-open scan before the item manager
+            // has even finished its first cache pass.
+            .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 if
@@ -154,10 +175,10 @@ final class MenuBarManager: ObservableObject {
                             }
 
                             // Check if any menu bar item has a menu open (for smart strategy)
-                            if appState.settings.general.rehideStrategy == .smart {
-                                if await appState.itemManager.isAnyMenuBarItemMenuOpen() {
-                                    return
-                                }
+                            if appState.settings.general.rehideStrategy == .smart,
+                               await appState.itemManager.isAnyMenuBarItemMenuOpen()
+                            {
+                                return
                             }
 
                             hiddenSection.hide()
@@ -208,8 +229,144 @@ final class MenuBarManager: ObservableObject {
             }
             .store(in: &c)
 
+        // Refresh average color when space or screen changes while settings or adaptive is active.
+        Publishers.Merge(
+            NSWorkspace.shared.notificationCenter
+                .publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
+                .replace(with: ()),
+            NotificationCenter.default
+                .publisher(for: NSApplication.didChangeScreenParametersNotification)
+                .replace(with: ())
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in
+            guard let self else { return }
+            let isAdaptiveActive: Bool = {
+                guard let appState = self.appState else { return false }
+                let current = appState.appearanceManager.configuration.current
+                return current.backgroundKind == .adaptive || current.tintKind == .adaptive
+            }()
+            guard settingsWindow?.isVisible == true || isAdaptiveActive else { return }
+            updateAverageColorInfo()
+        }
+        .store(in: &c)
+
+        // Cache per-screen colors before display sleep so they can be restored
+        // on wake, preventing a white flash before the display settles and
+        // wallpaper renders. Uses screensDidSleep/Wake which fire on display
+        // sleep/wake (screen lock, idle timeout) AND system sleep (lid close).
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.screensDidSleepNotification)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                sleepColorCache = averageColors
+            }
+            .store(in: &c)
+
+        // On display wake, restore pre-sleep colors immediately (no white flash),
+        // then poll every 1s until the captured color changes from the cached
+        // value and stabilizes (2 consecutive identical captures), or 10s max.
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.screensDidWakeNotification)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let isAdaptiveActive: Bool = {
+                    guard let appState = self.appState else { return false }
+                    let current = appState.appearanceManager.configuration.current
+                    return current.backgroundKind == .adaptive || current.tintKind == .adaptive
+                }()
+                guard isAdaptiveActive else { return }
+
+                guard let cache = sleepColorCache else {
+                    updateAverageColorInfo()
+                    return
+                }
+
+                // Restore pre-sleep colors so the bar never flashes white.
+                averageColors = cache
+                if let id = NSScreen.screenWithActiveMenuBar?.displayID,
+                   let cached = cache[id]
+                {
+                    averageColorInfo = cached
+                }
+
+                // Poll every 1s until color changes from cache then stabilizes.
+                wakePollPrevColors = nil
+                wakePollStableCount = 0
+                wakePollDidChange = false
+                wakePollStartTime = Date()
+                wakePollTimer = Timer.publish(every: 1, on: .main, in: .default)
+                    .autoconnect()
+                    .sink { [weak self] _ in
+                        guard let self else { return }
+                        // Wraps the stabilization logic in a Task that awaits
+                        // updateAverageColorInfoAsync so the post-capture read
+                        // of averageColors sees the fresh values; the original
+                        // sync call returned before the fire-and-forget Tasks
+                        // populated state, defeating stabilization detection.
+                        Task { [weak self] in
+                            guard let self else { return }
+                            let elapsed = wakePollStartTime.map { Date().timeIntervalSince($0) } ?? 0
+
+                            if elapsed >= 10 {
+                                sleepColorCache = nil
+                                wakePollTimer = nil
+                                return
+                            }
+
+                            await updateAverageColorInfoAsync()
+                            let after = averageColors
+
+                            if !wakePollDidChange, let cache = sleepColorCache, after != cache {
+                                wakePollDidChange = true
+                            }
+
+                            if wakePollDidChange {
+                                if let prev = wakePollPrevColors, prev == after {
+                                    wakePollStableCount += 1
+                                    if wakePollStableCount >= 1 {
+                                        sleepColorCache = nil
+                                        wakePollTimer = nil
+                                        return
+                                    }
+                                } else {
+                                    wakePollStableCount = 0
+                                }
+                            }
+
+                            wakePollPrevColors = after
+                        }
+                    }
+            }
+            .store(in: &c)
+
+        // Start/stop adaptive color refresh when background or tint uses adaptive mode.
+        if let appState {
+            appState.appearanceManager.$configuration
+                .map { config in
+                    let current = config.current
+                    return current.backgroundKind == .adaptive || current.tintKind == .adaptive
+                }
+                .removeDuplicates()
+                .sink { [weak self] isAdaptive in
+                    guard let self else { return }
+                    if isAdaptive {
+                        captureAdaptiveColorWithRetry()
+                        adaptiveColorRefreshCancellable = Timer.publish(every: 30, tolerance: 5, on: .main, in: .default)
+                            .autoconnect()
+                            .sink { [weak self] _ in
+                                self?.updateAverageColorInfo()
+                            }
+                    } else {
+                        adaptiveColorRefreshCancellable?.cancel()
+                        adaptiveColorRefreshCancellable = nil
+                    }
+                }
+                .store(in: &c)
+        }
+
         // Hide application menus when a section is shown (if applicable).
-        Publishers.MergeMany(sections.map { $0.controlItem.$state })
+        Publishers.MergeMany(sections.map(\.controlItem.$state))
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self, let appState else {
@@ -218,7 +375,7 @@ final class MenuBarManager: ObservableObject {
 
                 // Don't continue if:
                 //   * The "HideApplicationMenus" setting isn't enabled.
-                //   * Using the Ice Bar.
+                //   * Using the Thaw Bar.
                 //   * The menu bar is hidden by the system.
                 //   * The active space is fullscreen.
                 //   * The settings window is visible.
@@ -268,7 +425,7 @@ final class MenuBarManager: ObservableObject {
                         let hiddenControlItem = screenItems.first { $0.tag == .hiddenControlItem }
                         let alwaysHiddenControlItem = screenItems.first { $0.tag == .alwaysHiddenControlItem }
 
-                        // TODO: This section needs to be improved but is okay for now.
+                        // Approximate hidden items width from control item positions.
 
                         // Get control item bounds and hidden items width
                         var controlBounds: CGRect = .zero
@@ -294,17 +451,16 @@ final class MenuBarManager: ObservableObject {
                         let appMenuRightStart = appMenuFrame.maxX
 
                         // Available space: if app menu extends into notch, add notch width; otherwise use visible frame
-                        let spaceAvailableFromAppMenuEnd: CGFloat
-                        if let notch = screen.frameOfNotch {
+                        let spaceAvailableFromAppMenuEnd: CGFloat = if let notch = screen.frameOfNotch {
                             if appMenuRightStart > notch.minX {
                                 // App menu extends into notch, items get moved past notch
-                                spaceAvailableFromAppMenuEnd = (notch.minX - appMenuRightStart) + (screen.visibleFrame.maxX - notch.maxX)
+                                (notch.minX - appMenuRightStart) + (screen.visibleFrame.maxX - notch.maxX)
                             } else {
                                 // App menu doesn't extend into notch
-                                spaceAvailableFromAppMenuEnd = screen.visibleFrame.maxX - appMenuRightStart
+                                screen.visibleFrame.maxX - appMenuRightStart
                             }
                         } else {
-                            spaceAvailableFromAppMenuEnd = screen.visibleFrame.maxX - appMenuRightStart
+                            screen.visibleFrame.maxX - appMenuRightStart
                         }
 
                         let spaceNeededFromAppMenuEnd = newRightmostPos - appMenuRightStart
@@ -323,9 +479,24 @@ final class MenuBarManager: ObservableObject {
         cancellables = c
     }
 
-    /// Updates the ``averageColorInfo`` property with the current average color
-    /// of the menu bar.
+    /// Updates the ``averageColorInfo`` and ``averageColors`` properties with
+    /// the current average color of the menu bar background per screen.
+    ///
+    /// Fire-and-forget shape preserved for the call sites that don't need to
+    /// read averageColors immediately after. Callers that DO need read-after
+    /// semantics (captureAdaptiveColorWithRetry, the wake-poll loop) must use
+    /// updateAverageColorInfoAsync directly so their read sees fresh state.
     func updateAverageColorInfo() {
+        Task { [weak self] in
+            await self?.updateAverageColorInfoAsync()
+        }
+    }
+
+    /// Awaitable variant of updateAverageColorInfo. Per-screen captures run
+    /// concurrently in a TaskGroup; the for-await loop collects results on the
+    /// @MainActor context, so all averageColors / averageColorInfo writes are
+    /// complete before the await returns.
+    func updateAverageColorInfoAsync() async {
         guard let appState else { return }
 
         // Only update if we really need the color info
@@ -333,44 +504,94 @@ final class MenuBarManager: ObservableObject {
         let isIceBarVisible = appState.navigationState.isIceBarPresented
         let isSearchVisible = appState.navigationState.isSearchPresented
         let anyIceBarEnabled = appState.settings.displaySettings.isIceBarEnabledOnAnyDisplay
+        let currentConfig = appState.appearanceManager.configuration.current
+        let isAdaptiveActive = currentConfig.backgroundKind == .adaptive || currentConfig.tintKind == .adaptive
 
-        guard isSettingsVisible || isIceBarVisible || isSearchVisible || anyIceBarEnabled else {
+        guard isSettingsVisible || isIceBarVisible || isSearchVisible || anyIceBarEnabled || isAdaptiveActive else {
             return
         }
 
-        guard
-            let settingsWindow,
-            settingsWindow.isVisible,
-            let screen = settingsWindow.screen
-        else {
-            return
+        let targetScreens: [NSScreen]
+        if isAdaptiveActive {
+            targetScreens = NSScreen.screens
+        } else if isSettingsVisible {
+            targetScreens = [settingsWindow?.screen].compactMap(\.self)
+        } else {
+            guard let screen = NSScreen.screenWithActiveMenuBar else { return }
+            targetScreens = [screen]
         }
+
+        guard !targetScreens.isEmpty else { return }
 
         let windows = WindowInfo.createWindows(option: .onScreen)
-        let displayID = screen.displayID
+        let activeDisplayID = NSScreen.screenWithActiveMenuBar?.displayID
 
-        guard
-            let menuBarWindow = WindowInfo.menuBarWindow(from: windows, for: displayID),
-            let wallpaperWindow = WindowInfo.wallpaperWindow(from: windows, for: displayID)
-        else {
-            return
+        // Resolve per-screen capture inputs synchronously on MainActor before
+        // fanning out; the SCK calls themselves are the only async work.
+        var inputs = [(displayID: CGDirectDisplayID, windowIDs: [CGWindowID], bounds: CGRect)]()
+        for screen in targetScreens {
+            let displayID = screen.displayID
+            guard
+                let menuBarWindow = WindowInfo.menuBarWindow(from: windows, for: displayID),
+                let wallpaperWindow = WindowInfo.wallpaperWindow(from: windows, for: displayID)
+            else {
+                continue
+            }
+            let windowIDs = [menuBarWindow.windowID, wallpaperWindow.windowID]
+            let bounds = withMutableCopy(of: wallpaperWindow.bounds) { $0.size.height = 1 }
+            inputs.append((displayID, windowIDs, bounds))
         }
 
-        guard
-            let image = ScreenCapture.captureWindows(
-                with: [menuBarWindow.windowID, wallpaperWindow.windowID],
-                screenBounds: withMutableCopy(of: wallpaperWindow.bounds) { $0.size.height = 1 },
-                option: .nominalResolution
-            ),
-            let color = image.averageColor(option: .ignoreAlpha)
-        else {
-            return
+        await withTaskGroup(of: (CGDirectDisplayID, MenuBarAverageColorInfo)?.self) { group in
+            for input in inputs {
+                group.addTask {
+                    guard
+                        let image = await ScreenCapture.captureWindowsAsync(
+                            with: input.windowIDs,
+                            screenBounds: input.bounds,
+                            option: .nominalResolution
+                        ),
+                        let color = image.averageColor(option: .ignoreAlpha)
+                    else {
+                        return nil
+                    }
+                    return (input.displayID, MenuBarAverageColorInfo(color: color, source: .menuBarWindow))
+                }
+            }
+
+            // Collected on @MainActor (enclosing class isolation), so the
+            // averageColors / averageColorInfo writes below are safe and
+            // observable to read-after callers as soon as this await returns.
+            for await result in group {
+                guard let (displayID, info) = result else { continue }
+                if averageColors[displayID] != info {
+                    averageColors[displayID] = info
+                }
+                if displayID == activeDisplayID, averageColorInfo != info {
+                    averageColorInfo = info
+                }
+            }
         }
+    }
 
-        let info = MenuBarAverageColorInfo(color: color, source: .menuBarWindow)
-
-        if averageColorInfo != info {
-            averageColorInfo = info
+    /// Attempts to capture the adaptive color with retries when the initial
+    /// capture fails (e.g. during early app launch before the Window Server
+    /// is fully settled). Retries until all screens have a color entry.
+    private func captureAdaptiveColorWithRetry() {
+        // Awaits each capture before checking averageColors so we don't burn
+        // retries on stale reads of fire-and-forget Task results.
+        Task { [weak self] in
+            guard let self else { return }
+            for attempt in 0..<10 {
+                if attempt > 0 {
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                await self.updateAverageColorInfoAsync()
+                let allCaptured = NSScreen.screens.allSatisfy {
+                    self.averageColors.keys.contains($0.displayID)
+                }
+                if allCaptured { return }
+            }
         }
     }
 
@@ -395,9 +616,49 @@ final class MenuBarManager: ObservableObject {
             action: #selector(showAppearanceEditorPanel),
             keyEquivalent: ""
         )
-        editAppearanceItem.image = NSImage(systemSymbolName: "paintbrush", accessibilityDescription: "Edit Appearance")
+        editAppearanceItem.image = NSImage(systemSymbolName: "swatchpalette", accessibilityDescription: "Edit Appearance")
         editAppearanceItem.target = self
         menu.addItem(editAppearanceItem)
+
+        let editLayoutItem = NSMenuItem(
+            title: String(localized: "Edit Menu Bar Layout…"),
+            action: #selector(showMenuBarLayoutSettings),
+            keyEquivalent: ""
+        )
+        editLayoutItem.image = NSImage(systemSymbolName: "rectangle.topthird.inset.filled", accessibilityDescription: "Edit Layout")
+        editLayoutItem.target = self
+        menu.addItem(editLayoutItem)
+
+        // Profiles submenu.
+        if let appState, !appState.profileManager.profiles.isEmpty {
+            menu.addItem(.separator())
+
+            let profilesItem = NSMenuItem(
+                title: String(localized: "Profiles"),
+                action: nil,
+                keyEquivalent: ""
+            )
+            profilesItem.image = NSImage(
+                systemSymbolName: "person.crop.rectangle.stack",
+                accessibilityDescription: "Profiles"
+            )
+            let profilesMenu = NSMenu()
+            for meta in appState.profileManager.profiles {
+                let item = NSMenuItem(
+                    title: meta.name,
+                    action: #selector(applyProfileFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = meta.id
+                if meta.id == appState.profileManager.activeProfileID {
+                    item.state = .on
+                }
+                profilesMenu.addItem(item)
+            }
+            profilesItem.submenu = profilesMenu
+            menu.addItem(profilesItem)
+        }
 
         menu.addItem(.separator())
 
@@ -409,7 +670,73 @@ final class MenuBarManager: ObservableObject {
         settingsItem.image = NSImage(systemSymbolName: "gear", accessibilityDescription: "Settings")
         menu.addItem(settingsItem)
 
+        if appState?.settings.advanced.enableSecondaryContextMenuQuit == true {
+            menu.addItem(.separator())
+
+            let quitItem = NSMenuItem(
+                title: String(localized: "Quit \(Constants.displayName)"),
+                action: #selector(quitFromSecondaryContextMenu),
+                keyEquivalent: "q"
+            )
+            quitItem.keyEquivalentModifierMask = .command
+            quitItem.target = self
+            quitItem.image = NSImage(systemSymbolName: "power", accessibilityDescription: "Quit")
+            menu.addItem(quitItem)
+
+            let restartItem = NSMenuItem(
+                title: String(localized: "Restart \(Constants.displayName)"),
+                action: #selector(restartFromSecondaryContextMenu),
+                keyEquivalent: "q"
+            )
+            restartItem.keyEquivalentModifierMask = [.command, .option]
+            restartItem.isAlternate = true
+            restartItem.target = self
+            restartItem.image = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: "Restart")
+            menu.addItem(restartItem)
+        }
+
         menu.popUp(positioning: nil, at: point, in: nil)
+    }
+
+    @objc private func quitFromSecondaryContextMenu() {
+        // Defer NSApp.terminate until the main run loop is back in default mode.
+        // The action fires inside popUp's eventTracking-mode nested run loop, and
+        // popUp itself was invoked from a Task that is occupying the main actor.
+        // Scheduling in .default only ensures the block runs after popUp tracking
+        // unwinds and the enclosing Task completes, so terminate's wait loop can
+        // drain the restore and timeout Tasks scheduled by applicationShouldTerminate.
+        RunLoop.main.perform(inModes: [.default]) {
+            MainActor.assumeIsolated {
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    @objc private func restartFromSecondaryContextMenu() {
+        RunLoop.main.perform(inModes: [.default]) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.appState?.restartSelf()
+            }
+        }
+    }
+
+    @objc private func applyProfileFromMenu(_ menuItem: NSMenuItem) {
+        guard
+            let profileID = menuItem.representedObject as? UUID,
+            let appState,
+            appState.profileManager.layoutTask == nil,
+            profileID != appState.profileManager.activeProfileID
+        else { return }
+        Task { [weak self] in
+            do {
+                let profile = try appState.profileManager.loadProfile(id: profileID)
+                let previousID = appState.profileManager.activeProfileID
+                appState.profileManager.activeProfileID = profileID
+                appState.profileManager.applyProfile(profile, to: appState, previousProfileID: previousID)
+            } catch {
+                self?.diagLog.error("Failed to apply profile \(profileID): \(error)")
+            }
+        }
     }
 
     /// Hides the application menus.
@@ -464,6 +791,16 @@ final class MenuBarManager: ObservableObject {
         } else {
             hideApplicationMenus(manual: true)
         }
+    }
+
+    /// Shows the menu bar layout settings pane.
+    @objc private func showMenuBarLayoutSettings() {
+        guard let appState else {
+            return
+        }
+        appState.navigationState.settingsNavigationIdentifier = .menuBarLayout
+        appState.activate(withPolicy: .regular)
+        appState.openWindow(.settings)
     }
 
     /// Shows the appearance editor panel.
@@ -531,10 +868,23 @@ struct MenuBarAverageColorInfo: Hashable {
     /// A Boolean value that indicates whether the menu bar has a
     /// bright color.
     ///
-    /// This value is `true` if ``brightness`` is above `0.67`. At
-    /// the time of writing, if this value is `true`, the menu bar
+    /// This value is `true` if ``brightness`` is above ``Constants.menuBarBrightnessThreshold``.
+    /// At the time of writing, if this value is `true`, the menu bar
     /// draws its items with a darker appearance.
     var isBright: Bool {
-        brightness > 0.67
+        brightness > Constants.menuBarBrightnessThreshold
+    }
+
+    /// Returns whether the menu bar has a bright color for the given screen.
+    /// Uses a lower threshold for notched displays to bias toward black text.
+    /// - Parameter screen: The screen to check for notch presence
+    /// - Returns: `true` if the background is bright enough to require dark text
+    func isBright(for screen: NSScreen?) -> Bool {
+        let activeOrPassed = screen ?? NSScreen.screenWithActiveMenuBar
+        let hasNotch = activeOrPassed?.hasNotch == true
+        let threshold = hasNotch
+            ? Constants.notchedDisplayBrightnessThreshold
+            : Constants.menuBarBrightnessThreshold
+        return brightness > threshold
     }
 }

@@ -35,7 +35,7 @@ final class MenuBarAppearanceManager: ObservableObject {
     private(set) var overlayPanels = Set<MenuBarOverlayPanel>()
 
     /// The amount to inset the menu bar if called for by the configuration.
-    let menuBarInsetAmount: CGFloat = if #available(macOS 26.0, *) { 3.5 } else { 5 }
+    let menuBarInsetAmount: CGFloat = 3.5
 
     /// Performs initial setup of the manager.
     func performSetup(with appState: AppState) {
@@ -69,7 +69,7 @@ final class MenuBarAppearanceManager: ObservableObject {
                 while let panel = overlayPanels.popFirst() {
                     panel.close()
                 }
-                if Set(overlayPanels.map { $0.owningScreen }) != Set(NSScreen.screens) {
+                if Set(overlayPanels.map(\.owningScreen)) != Set(NSScreen.screens) {
                     configureOverlayPanels(with: configuration)
                 }
             }
@@ -106,6 +106,28 @@ final class MenuBarAppearanceManager: ObservableObject {
             }
             .store(in: &c)
 
+        $previewConfiguration
+            .sink { [weak self] preview in
+                guard let self else { return }
+                if let preview {
+                    let needsPanels = preview.hasShadow
+                        || preview.hasBorder
+                        || configuration.shapeKind != .noShape
+                        || preview.tintKind != .noTint
+                        || preview.backgroundKind != .none
+                    if overlayPanels.isEmpty, needsPanels {
+                        configureOverlayPanels(with: configuration, force: true)
+                    }
+                } else {
+                    if !needsOverlayPanels(for: configuration) {
+                        while let panel = overlayPanels.popFirst() {
+                            panel.close()
+                        }
+                    }
+                }
+            }
+            .store(in: &c)
+
         cancellables = c
     }
 
@@ -125,11 +147,17 @@ final class MenuBarAppearanceManager: ObservableObject {
         if current.tintKind != .noTint {
             return true
         }
+        if configuration.current.backgroundKind != .none {
+            return true
+        }
         return false
     }
 
     /// Configures the manager's overlay panels, if required by the given configuration.
-    private func configureOverlayPanels(with configuration: MenuBarAppearanceConfigurationV2) {
+    private func configureOverlayPanels(
+        with configuration: MenuBarAppearanceConfigurationV2,
+        force: Bool = false
+    ) {
         // Close existing panels to prevent memory leaks and duplicate windows
         while let panel = overlayPanels.popFirst() {
             panel.close()
@@ -137,7 +165,7 @@ final class MenuBarAppearanceManager: ObservableObject {
 
         guard
             let appState,
-            needsOverlayPanels(for: configuration)
+            force || needsOverlayPanels(for: configuration)
         else {
             return
         }

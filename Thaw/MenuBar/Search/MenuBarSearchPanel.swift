@@ -10,15 +10,8 @@ import Combine
 import Ifrit
 import SwiftUI
 
-private struct MenuBarSearchPanelKey: EnvironmentKey {
-    static let defaultValue: MenuBarSearchPanel? = nil
-}
-
 extension EnvironmentValues {
-    var menuBarSearchPanel: MenuBarSearchPanel? {
-        get { self[MenuBarSearchPanelKey.self] }
-        set { self[MenuBarSearchPanelKey.self] = newValue }
-    }
+    @Entry var menuBarSearchPanel: MenuBarSearchPanel?
 }
 
 /// A panel that contains the menu bar search interface.
@@ -93,7 +86,7 @@ final class MenuBarSearchPanel: NSPanel {
     {
         switch selection {
         case let .item(tag, windowID):
-            if let windowID = windowID {
+            if let windowID {
                 return appState?.itemManager.itemCache.managedItems.first(where: { $0.windowID == windowID })
             }
             return appState?.itemManager.itemCache.managedItems.first(matching: tag)
@@ -119,7 +112,7 @@ final class MenuBarSearchPanel: NSPanel {
             appState?.itemManager.itemCache.managedItems.first(matching: tag)
         }
 
-        guard let item = item else {
+        guard let item else {
             Self.diagLog.error("Cannot save editing name, no matching item")
             return
         }
@@ -145,13 +138,13 @@ final class MenuBarSearchPanel: NSPanel {
         true
     }
 
-    /// Creates a menu bar search panel.
+    /// Creates a menu bar search panel with Liquid Glass effect.
     init() {
         super.init(
             contentRect: .zero,
             styleMask: [
                 .titled, .fullSizeContentView, .nonactivatingPanel,
-                .utilityWindow, .hudWindow,
+                .utilityWindow,
             ],
             backing: .buffered,
             defer: false
@@ -164,6 +157,10 @@ final class MenuBarSearchPanel: NSPanel {
         self.collectionBehavior = [
             .fullScreenAuxiliary, .ignoresCycle, .moveToActiveSpace,
         ]
+        // Liquid Glass: transparent window with shadow
+        self.hasShadow = true
+        self.backgroundColor = .clear
+        self.isOpaque = false
         // Close panel when it loses key focus (e.g., another app gets focus)
         NotificationCenter.default.addObserver(
             self,
@@ -281,6 +278,10 @@ final class MenuBarSearchPanel: NSPanel {
         }
 
         contentView = hostingView
+        // Match window corner radius and curve to glass effect (.continuous)
+        contentView?.layer?.cornerRadius = 16
+        contentView?.layer?.cornerCurve = .continuous
+        contentView?.layer?.masksToBounds = true
         makeKeyAndOrderFront(nil)
 
         mouseDownMonitor.start()
@@ -311,12 +312,14 @@ final class MenuBarSearchPanel: NSPanel {
     @MainActor
     override func close() {
         // Only save if window is actually visible and has content
-        if isVisible, let screen = screen, contentView != nil {
+        if isVisible, let screen, contentView != nil {
             saveFrameForDisplay(screen)
         }
         cacheTask?.cancel()
         cacheTask = nil
-        model.searchText = ""
+        if !Defaults.bool(forKey: .rememberSearchQuery) {
+            model.searchText = ""
+        }
         model.editingItemTag = nil
         super.close()
         contentView = nil
@@ -328,7 +331,7 @@ final class MenuBarSearchPanel: NSPanel {
     override func cancelOperation(_: Any?) {
         if model.editingItemTag != nil {
             cancelEditing()
-        } else if model.searchText != "" {
+        } else if model.searchText != "", !Defaults.bool(forKey: .rememberSearchQuery) {
             model.searchText = ""
         } else {
             close()
@@ -427,10 +430,12 @@ private final class MenuBarSearchHostingView: NSHostingView<AnyView> {
 private struct MenuBarSearchContentView: View {
     private typealias ListItem = SectionedListItem<MenuBarSearchModel.ItemID>
 
+    @EnvironmentObject var appState: AppState
     @EnvironmentObject var itemManager: MenuBarItemManager
     @EnvironmentObject var imageCache: MenuBarItemImageCache
     @EnvironmentObject var model: MenuBarSearchModel
     @FocusState private var searchFieldIsFocused: Bool
+    @AppStorage(Defaults.Key.rememberSearchQuery.rawValue) private var rememberSearchQuery = Defaults.DefaultValue.rememberSearchQuery
 
     let displayID: CGDirectDisplayID
     let panel: MenuBarSearchPanel
@@ -441,35 +446,58 @@ private struct MenuBarSearchContentView: View {
     }
 
     private var bottomBarPadding: CGFloat {
-        if #available(macOS 26.0, *) { 7 } else { 5 }
+        7
+    }
+
+    private var bottomBarHorizontalPadding: CGFloat {
+        4
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            searchField
-            mainContent
-            bottomBar
-        }
-        .environment(\.menuBarSearchPanel, panel)
-        .background {
-            VisualEffectView(material: .sheet, blendingMode: .behindWindow)
-                .opacity(0.5)
-        }
-        .frame(width: 600, height: 400)
-        .fixedSize()
-        .task {
-            searchFieldIsFocused = true
-        }
-        .onChange(of: model.searchText, initial: true) {
-            updateDisplayedItems()
-            selectFirstDisplayedItem()
-        }
-        .onChange(of: itemManager.itemCache, initial: true) {
-            updateDisplayedItems()
-            if model.selection == nil {
+        mainContent
+            .safeAreaBar(edge: .top, spacing: 0) {
+                searchField
+            }
+            .safeAreaBar(edge: .bottom, spacing: 0) {
+                bottomBar
+            }
+            .scrollEdgeEffectStyle(.automatic, for: .vertical)
+            .environment(\.menuBarSearchPanel, panel)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .frame(width: 600, height: 400)
+            .fixedSize()
+            .onAppear {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(50))
+                    searchFieldIsFocused = true
+                }
+            }
+            .onChange(of: model.searchText, initial: true) {
+                updateDisplayedItems()
                 selectFirstDisplayedItem()
             }
-        }
+            .onChange(of: itemManager.itemCache, initial: true) {
+                updateDisplayedItems()
+                if model.selection == nil {
+                    selectFirstDisplayedItem()
+                }
+            }
+            .onChange(of: appState.settings.advanced.searchSectionOrder) {
+                updateDisplayedItems()
+                ensureValidSelection()
+            }
+            .onChange(of: appState.settings.advanced.searchIncludeVisible) {
+                updateDisplayedItems()
+                ensureValidSelection()
+            }
+            .onChange(of: appState.settings.advanced.searchIncludeHidden) {
+                updateDisplayedItems()
+                ensureValidSelection()
+            }
+            .onChange(of: appState.settings.advanced.searchIncludeAlwaysHidden) {
+                updateDisplayedItems()
+                ensureValidSelection()
+            }
     }
 
     @ViewBuilder
@@ -487,17 +515,17 @@ private struct MenuBarSearchContentView: View {
                 }
                 .labelsHidden()
                 .textFieldStyle(.plain)
-                .multilineTextAlignment(.leading)
                 .font(.system(size: 18))
                 .textContentType(.none)
                 .autocorrectionDisabled(true)
+                .focused($searchFieldIsFocused)
 
                 Spacer()
             }
             .padding(15)
-            .focused($searchFieldIsFocused)
 
             Divider()
+                .padding(.horizontal, 15)
         }
     }
 
@@ -555,6 +583,10 @@ private struct MenuBarSearchContentView: View {
                 itemManager.appState?.openWindow(.settings)
             }
 
+            Toggle("Keep search", isOn: $rememberSearchQuery)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+
             Spacer()
 
             if let selection = model.selection, let item = panel.menuBarItem(for: selection) {
@@ -576,15 +608,28 @@ private struct MenuBarSearchContentView: View {
             }
         }
         .padding(bottomBarPadding)
-        .background(.thinMaterial)
+        .padding(.horizontal, bottomBarHorizontalPadding)
         .buttonStyle(BottomBarButtonStyle())
-        .overlay(alignment: .top) {
-            Divider()
-        }
     }
 
     private func selectFirstDisplayedItem() {
+        guard !model.displayedItems.isEmpty else {
+            model.selection = nil
+            return
+        }
         model.selection = model.displayedItems.first { $0.isSelectable }?.id
+    }
+
+    /// Re-selects the first item when the current selection has been
+    /// filtered out of `displayedItems` (or was never set).
+    private func ensureValidSelection() {
+        guard let selection = model.selection else {
+            selectFirstDisplayedItem()
+            return
+        }
+        if !model.displayedItems.contains(where: { $0.id == selection }) {
+            selectFirstDisplayedItem()
+        }
     }
 
     private func updateDisplayedItems() {
@@ -598,8 +643,21 @@ private struct MenuBarSearchContentView: View {
         }
         typealias ScoredItem = (listItem: ListItem, score: Double)
 
-        let searchItems: [SearchItem] = MenuBarSection.Name.allCases
+        let advanced = itemManager.appState?.settings.advanced
+        let orderedNames: [MenuBarSection.Name] = advanced?.searchSectionOrder ?? Array(MenuBarSection.Name.allCases)
+
+        let searchItems: [SearchItem] = orderedNames
             .reduce(into: []) { items, name in
+                let included: Bool = {
+                    guard let advanced else { return true }
+                    switch name {
+                    case .visible: return advanced.searchIncludeVisible
+                    case .hidden: return advanced.searchIncludeHidden
+                    case .alwaysHidden: return advanced.searchIncludeAlwaysHidden
+                    }
+                }()
+                guard included else { return }
+
                 if
                     let appState = itemManager.appState,
                     let section = appState.menuBarManager.section(
@@ -616,6 +674,7 @@ private struct MenuBarSearchContentView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 10)
+                        .padding(.leading, 6)
                 }
                 items.append(SearchItem(listItem: headerItem, title: name.displayString))
 
@@ -635,11 +694,9 @@ private struct MenuBarSearchContentView: View {
             }
 
         if model.searchText.isEmpty {
-            model.displayedItems = searchItems.map { $0.listItem }
+            model.displayedItems = searchItems.map(\.listItem)
         } else {
-            let selectableItems = searchItems.filter {
-                $0.listItem.isSelectable
-            }
+            let selectableItems = searchItems.filter(\.listItem.isSelectable)
             // Using weighted search via FuseProp
             let fuseResults = model.fuse.searchSync(model.searchText, in: selectableItems, by: \.properties)
 
@@ -652,7 +709,7 @@ private struct MenuBarSearchContentView: View {
                 .sorted { (lhs: ScoredItem, rhs: ScoredItem) -> Bool in
                     lhs.score > rhs.score
                 }
-                .map { $0.listItem }
+                .map(\.listItem)
         }
     }
 
@@ -662,10 +719,15 @@ private struct MenuBarSearchContentView: View {
         }
         closePanel()
         Task {
-            try await Task.sleep(for: .milliseconds(25))
+            // Wait until the search panel is fully closed before acting on
+            // the selected item. Uses KVO on isVisible so we resume as soon
+            // as the panel hides rather than waiting a fixed 25 ms.
+            await panel.waitUntilClosed(timeout: .milliseconds(200))
             if Bridging.isWindowOnScreen(item.windowID) {
                 try await itemManager.click(item: item, with: .left)
             } else {
+                // temporarilyShow handles move, click, and fallback click
+                // internally so shownInterfaceWindow is always captured.
                 await itemManager.temporarilyShow(
                     item: item,
                     clickingWith: .left,
@@ -679,14 +741,6 @@ private struct MenuBarSearchContentView: View {
 private struct EditNameButton: View {
     let action: () -> Void
 
-    private var backgroundShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 3, style: .circular)
-        }
-    }
-
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
@@ -694,31 +748,21 @@ private struct EditNameButton: View {
                     .padding(.leading, 5)
 
                 HStack(spacing: 0) {
-                    Text("⌘")
+                    Text(verbatim: "⌘")
                 }
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
-                .background {
-                    backgroundShape
-                        .fill(.regularMaterial)
-                        .brightness(0.25)
-                        .opacity(0.5)
-                }
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .foregroundStyle(.secondary)
 
-                Text("+")
+                Text(verbatim: "+")
 
                 HStack(spacing: 0) {
-                    Text("E")
+                    Text(verbatim: "E")
                 }
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
-                .background {
-                    backgroundShape
-                        .fill(.regularMaterial)
-                        .brightness(0.25)
-                        .opacity(0.5)
-                }
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .foregroundStyle(.secondary)
             }
         }
@@ -727,14 +771,6 @@ private struct EditNameButton: View {
 
 private struct EditConfirmButton: View {
     let action: () -> Void
-
-    private var backgroundShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 3, style: .circular)
-        }
-    }
 
     var body: some View {
         Button(action: action) {
@@ -752,12 +788,7 @@ private struct EditConfirmButton: View {
                     .bold()
                     .padding(.horizontal, 7)
                     .padding(.vertical, 5)
-                    .background {
-                        backgroundShape
-                            .fill(.regularMaterial)
-                            .brightness(0.25)
-                            .opacity(0.5)
-                    }
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
         }
     }
@@ -765,14 +796,6 @@ private struct EditConfirmButton: View {
 
 private struct EditDiscardButton: View {
     let action: () -> Void
-
-    private var backgroundShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 3, style: .circular)
-        }
-    }
 
     var body: some View {
         Button(action: action) {
@@ -782,16 +805,11 @@ private struct EditDiscardButton: View {
                 )
                 .padding(.leading, 5)
 
-                Text("⎋")
+                Text(verbatim: "⎋")
                     .font(.system(size: 12))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
-                    .background {
-                        backgroundShape
-                            .fill(.regularMaterial)
-                            .brightness(0.25)
-                            .opacity(0.5)
-                    }
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
         }
     }
@@ -815,14 +833,6 @@ private struct ShowItemButton: View {
     let item: MenuBarItem
     let action: () -> Void
 
-    private var backgroundShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 3, style: .circular)
-        }
-    }
-
     var body: some View {
         Button(action: action) {
             HStack {
@@ -841,45 +851,19 @@ private struct ShowItemButton: View {
                     .bold()
                     .padding(.horizontal, 7)
                     .padding(.vertical, 5)
-                    .background {
-                        backgroundShape
-                            .fill(.regularMaterial)
-                            .brightness(0.25)
-                            .opacity(0.5)
-                    }
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
         }
     }
 }
 
 private struct BottomBarButtonStyle: ButtonStyle {
-    @State private var isHovering = false
-
-    private var borderShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 5, style: .circular)
-        }
-    }
-
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .frame(height: 22)
             .frame(minWidth: 22)
             .padding(3)
-            .background {
-                borderShape
-                    .fill(.regularMaterial)
-                    .brightness(0.25)
-                    .opacity(
-                        configuration.isPressed ? 0.5 : isHovering ? 0.25 : 0
-                    )
-            }
-            .contentShape([.focusEffect, .interaction], borderShape)
-            .onHover { hovering in
-                isHovering = hovering
-            }
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
     }
 }
 
@@ -936,19 +920,15 @@ private struct MenuBarSearchItemView: View {
     }
 
     private var backgroundShape: some InsettableShape {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-        } else {
-            RoundedRectangle(cornerRadius: 5, style: .circular)
-        }
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
     }
 
     private var dimension: CGFloat {
-        if #available(macOS 26.0, *) { 26 } else { 24 }
+        26
     }
 
     private var padding: CGFloat {
-        if #available(macOS 26.0, *) { 6 } else { 8 }
+        6
     }
 
     var body: some View {

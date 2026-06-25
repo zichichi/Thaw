@@ -27,6 +27,13 @@ final class MenuBarSearchModel: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
+    /// Monotonically incremented by updateAverageColorInfo and
+    /// clearAverageColorInfo. A capture in flight stamps the value it observed
+    /// and only writes averageColorInfo on completion if the value still
+    /// matches, so a late completion can't overwrite a freshly cleared value
+    /// or a newer capture's result.
+    private var captureGeneration: Int = 0
+
     let fuse = Fuse(threshold: 0.5)
 
     func performSetup(with panel: MenuBarSearchPanel) {
@@ -50,22 +57,31 @@ final class MenuBarSearchModel: ObservableObject {
         .store(in: &c)
 
         // Clear average color when search panel closes to free memory
+        // and invalidate any in-flight capture from the open lifetime.
         panel.publisher(for: \.isVisible)
             .filter { !$0 }
             .sink { [weak self] _ in
-                self?.averageColorInfo = nil
+                self?.clearAverageColorInfo()
             }
             .store(in: &c)
 
-        // Clear on display changes to prevent stale color info
+        // Clear on display changes to prevent stale color info and invalidate
+        // any in-flight capture targeting the previous screen geometry.
         NotificationCenter.default
             .publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in
-                self?.averageColorInfo = nil
+                self?.clearAverageColorInfo()
             }
             .store(in: &c)
 
         cancellables = c
+    }
+
+    /// Clears averageColorInfo and invalidates any in-flight capture so a late
+    /// completion can't overwrite the cleared state with a stale value.
+    private func clearAverageColorInfo() {
+        captureGeneration += 1
+        averageColorInfo = nil
     }
 
     private func updateAverageColorInfo(for screen: NSScreen) {
@@ -79,21 +95,32 @@ final class MenuBarSearchModel: ObservableObject {
             return
         }
 
-        guard
-            let image = ScreenCapture.captureWindows(
-                with: [menuBarWindow.windowID, wallpaperWindow.windowID],
-                screenBounds: withMutableCopy(of: wallpaperWindow.bounds) { $0.size.height = 1 },
-                option: .nominalResolution
-            ),
-            let color = image.averageColor(option: .ignoreAlpha)
-        else {
-            return
-        }
+        let windowIDs = [menuBarWindow.windowID, wallpaperWindow.windowID]
+        let bounds = withMutableCopy(of: wallpaperWindow.bounds) { $0.size.height = 1 }
 
-        let info = MenuBarAverageColorInfo(color: color, source: .menuBarWindow)
+        // Stamp our generation before suspending. If clearAverageColorInfo or
+        // a newer updateAverageColorInfo bumps the counter while we await, our
+        // completion is stale and must skip the write so we don't undo an
+        // intentional clear or clobber a fresher capture.
+        captureGeneration += 1
+        let generation = captureGeneration
 
-        if averageColorInfo != info {
-            averageColorInfo = info
+        Task { [weak self] in
+            guard
+                let image = await ScreenCapture.captureWindowsAsync(
+                    with: windowIDs,
+                    screenBounds: bounds,
+                    option: .nominalResolution
+                ),
+                let color = image.averageColor(option: .ignoreAlpha)
+            else {
+                return
+            }
+            guard let self, generation == self.captureGeneration else { return }
+            let info = MenuBarAverageColorInfo(color: color, source: .menuBarWindow)
+            if self.averageColorInfo != info {
+                self.averageColorInfo = info
+            }
         }
     }
 }

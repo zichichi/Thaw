@@ -449,7 +449,7 @@ extension CGImage {
 
 // MARK: - Collection where Element == MenuBarItem
 
-extension Collection where Element == MenuBarItem {
+extension Collection<MenuBarItem> {
     /// Returns the first index where the menu bar item matching the specified
     /// tag appears in the collection.
     func firstIndex(matching tag: MenuBarItemTag) -> Index? {
@@ -597,6 +597,8 @@ extension NSImage {
 // MARK: - NSScreen
 
 extension NSScreen {
+    private static let diagLog = DiagLog(category: "NSScreen")
+
     /// The screen containing the mouse pointer.
     static var screenWithMouse: NSScreen? {
         screens.first { $0.frame.contains(NSEvent.mouseLocation) }
@@ -638,57 +640,89 @@ extension NSScreen {
         )
     }
 
-    /// Per-display cache of the last known application menu frame.
-    private static var applicationMenuFrameCache = [CGDirectDisplayID: CGRect]()
+    private struct DisplayCache {
+        var menuFrames = [CGDirectDisplayID: CGRect]()
+        var menuFramePID: pid_t?
+        var menuBarHeights = [CGDirectDisplayID: CGFloat]()
+    }
 
-    /// The pid of the frontmost application when the cache was last populated.
-    private static var applicationMenuFrameCachePID: pid_t?
+    private static let displayCache = OSAllocatedUnfairLock(initialState: DisplayCache())
 
     /// Invalidates the cached application menu frame when the frontmost app changes.
     private static func invalidateApplicationMenuFrameCacheIfNeeded() {
         let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        if currentPID != applicationMenuFrameCachePID {
-            applicationMenuFrameCache.removeAll()
-            applicationMenuFrameCachePID = currentPID
+        displayCache.withLock { cache in
+            if currentPID != cache.menuFramePID {
+                cache.menuFrames.removeAll()
+                cache.menuFramePID = currentPID
+            }
         }
     }
 
-    /// Per-display cache of the last known menu bar height.
-    private static var menuBarHeightCache = [CGDirectDisplayID: CGFloat]()
-
     /// Invalidates the cached menu bar heights.
     static func invalidateMenuBarHeightCache() {
-        menuBarHeightCache.removeAll()
+        displayCache.withLock { $0.menuBarHeights.removeAll() }
     }
 
     /// Removes cache entries for displays that are no longer connected.
     /// This prevents memory growth when displays are reconnected (which assigns new display IDs).
     static func cleanupDisconnectedDisplayCaches() {
-        let connectedDisplayIDs = Set(NSScreen.screens.map { $0.displayID })
-        menuBarHeightCache = menuBarHeightCache.filter { connectedDisplayIDs.contains($0.key) }
-        applicationMenuFrameCache = applicationMenuFrameCache.filter { connectedDisplayIDs.contains($0.key) }
+        let connectedDisplayIDs = Set(NSScreen.screens.map(\.displayID))
+        displayCache.withLock { cache in
+            cache.menuBarHeights = cache.menuBarHeights.filter { connectedDisplayIDs.contains($0.key) }
+            cache.menuFrames = cache.menuFrames.filter { connectedDisplayIDs.contains($0.key) }
+        }
+        pendingRetryDisplays.withLock { $0 = $0.filter { connectedDisplayIDs.contains($0) } }
+    }
+
+    /// Tracks displays with a pending menu bar height retry.
+    private static let pendingRetryDisplays = OSAllocatedUnfairLock(initialState: Set<CGDirectDisplayID>())
+
+    /// Schedules a one-shot deferred retry to populate the menu bar height
+    /// cache for a display after a transient unavailability (e.g. during
+    /// startup before the Window Server reports the Menubar window).
+    /// At most one pending retry per display is kept.
+    private static func scheduleMenuBarHeightRetry(for displayID: CGDirectDisplayID) {
+        let shouldSchedule = pendingRetryDisplays.withLock { $0.insert(displayID).inserted }
+        guard shouldSchedule else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(500)) {
+            if let menuBarWindow = WindowInfo.menuBarWindow(for: displayID) {
+                let height = menuBarWindow.bounds.height
+                if height > 0 {
+                    NSScreen.displayCache.withLock { $0.menuBarHeights[displayID] = height }
+                    NSScreen.diagLog.debug("getMenuBarHeight: retry succeeded for display=\(displayID) height=\(Double(height))")
+                }
+            }
+            _ = pendingRetryDisplays.withLock { $0.remove(displayID) }
+        }
     }
 
     /// Returns the height of the menu bar on this screen.
     ///
-    /// Results are cached per-display. A sentinel value of `-1` is stored when
-    /// the Menubar window cannot be found, preventing repeated Window Server
-    /// IPC calls on every mouse-moved event when the window is temporarily
-    /// unavailable (e.g. during startup). The cache is cleared on display
-    /// configuration changes via `invalidateMenuBarHeightCache()`.
+    /// Results are cached per-display. When the Menubar window is not found
+    /// (e.g. during startup before the Window Server has populated the list),
+    /// no sentinel is cached — the function returns nil and schedules a
+    /// deferred retry. Once the retry succeeds, subsequent calls return the
+    /// cached height. The cache is also cleared on display configuration
+    /// changes via `invalidateMenuBarHeightCache()`.
     func getMenuBarHeight() -> CGFloat? {
-        if let cached = NSScreen.menuBarHeightCache[displayID] {
-            // Negative sentinel means a previous lookup failed; don't retry
-            // until the cache is invalidated.
-            return cached > 0 ? cached : nil
+        let id = displayID
+        if let cached = NSScreen.displayCache.withLock({ $0.menuBarHeights[id] }), cached > 0 {
+            return cached
         }
-        let menuBarWindow = WindowInfo.menuBarWindow(for: displayID)
-        guard let height = menuBarWindow?.bounds.height, height > 0 else {
-            // Cache the failure so the next call skips the IPC round-trip.
-            NSScreen.menuBarHeightCache[displayID] = -1
+        guard let menuBarWindow = WindowInfo.menuBarWindow(for: id) else {
+            Self.diagLog.warning("getMenuBarHeight: display=\(id) no menu bar window found, scheduling retry")
+            NSScreen.scheduleMenuBarHeightRetry(for: id)
             return nil
         }
-        NSScreen.menuBarHeightCache[displayID] = height
+        let height = menuBarWindow.bounds.height
+        guard height > 0 else {
+            Self.diagLog.warning("getMenuBarHeight: display=\(id) menu bar window has zero height, scheduling retry")
+            NSScreen.scheduleMenuBarHeightRetry(for: id)
+            return nil
+        }
+        NSScreen.displayCache.withLock { $0.menuBarHeights[id] = height }
+        Self.diagLog.debug("getMenuBarHeight: display=\(id) liveHeight=\(Double(height)) windowID=\(menuBarWindow.windowID)")
         return height
     }
 
@@ -700,36 +734,61 @@ extension NSScreen {
     /// available.
     func getMenuBarHeightEstimate() -> CGFloat {
         if let live = getMenuBarHeight() {
+            Self.diagLog.debug("getMenuBarHeightEstimate: display=\(displayID) live=\(Double(live))")
             return live
         }
-        // Skip the sentinel (-1) stored for a failed lookup.
-        if let cached = NSScreen.menuBarHeightCache[displayID], cached > 0 {
+        let id = displayID
+        if let cached = NSScreen.displayCache.withLock({ $0.menuBarHeights[id] }), cached > 0 {
+            Self.diagLog.debug("getMenuBarHeightEstimate: display=\(id) cacheHit=\(Double(cached))")
             return cached
         }
         // Notched MacBooks have a ~37-38 pt menu bar; non-notch Macs use the
         // standard status-bar thickness (22 pt).
-        return hasNotch ? 37.0 : NSStatusBar.system.thickness
+        let fallback = hasNotch ? 37.0 : NSStatusBar.system.thickness
+        Self.diagLog.notice("getMenuBarHeightEstimate: display=\(displayID) FALLBACK hasNotch=\(hasNotch) fallback=\(Double(fallback))")
+        return fallback
     }
 
-    /// Returns the frame of the application menu on this screen.
+    /// Returns true when at least one menu bar status item is currently
+    /// rendered on-screen for the active space.
+    ///
+    /// Returns false when the menu bar is auto-hidden behind a fullscreen app
+    /// and not yet visually revealed. The menu bar window itself flips to
+    /// kCGWindowIsOnscreen at the start of the reveal sequence, well before
+    /// the status items become visible to the user; gating on the items list
+    /// more closely matches the perceived reveal state, which is what click
+    /// suppression needs.
+    func isSystemMenuBarVisible() -> Bool {
+        !Bridging.getMenuBarWindowList(option: [.onScreen, .activeSpace, .itemsOnly]).isEmpty
+    }
+
+    /// Returns the raw frame of the application menu on this screen, as
+    /// reported by the Accessibility API, without any notch-capping applied.
     ///
     /// Results are cached per-display and invalidated when the frontmost
     /// application changes, avoiding repeated Accessibility API round-trips.
-    func getApplicationMenuFrame() -> CGRect? {
+    /// Callers that need a notch-capped width should apply the cap themselves
+    /// using `frameOfNotch`.
+    ///
+    /// - Parameter bypassCache: If `true`, always queries the Accessibility API
+    ///   instead of using cached values. Use this when polling for changes.
+    func getApplicationMenuFrame(bypassCache: Bool = false) -> CGRect? {
         NSScreen.invalidateApplicationMenuFrameCacheIfNeeded()
-        if let cached = NSScreen.applicationMenuFrameCache[displayID] {
+        let id = displayID
+        if !bypassCache, let cached = NSScreen.displayCache.withLock({ $0.menuFrames[id] }) {
             return cached
         }
 
         let result = computeApplicationMenuFrame()
-        if let result {
-            NSScreen.applicationMenuFrameCache[displayID] = result
+        if !bypassCache, let result {
+            NSScreen.displayCache.withLock { $0.menuFrames[id] = result }
         }
         return result
     }
 
     /// Performs the actual Accessibility API queries to determine the
-    /// application menu frame. Called only on cache miss.
+    /// application menu frame. Returns the raw frame without notch-capping.
+    /// Called only on cache miss.
     private func computeApplicationMenuFrame() -> CGRect? {
         let displayBounds = CGDisplayBounds(displayID)
 
@@ -752,14 +811,10 @@ extension NSScreen {
                     return CGRect(x: frame.minX, y: applicationMenuFrame.minY, width: applicationMenuFrame.width, height: applicationMenuFrame.height)
                 }
             }
-            // Fallback: If AX fails for secondary screen, try getting main screen's menu width
+            // Fallback: If AX fails for secondary screen, use the main screen's raw menu width.
+            // No notch-capping here — callers apply any notch adjustments they need.
             if let mainFrame = mainScreen.getApplicationMenuFrame() {
-                // Do not over-extend into notch area; cap width at notch start if present.
-                var width = mainFrame.width
-                if let notch = frameOfNotch {
-                    width = min(width, notch.minX - frame.minX)
-                }
-                return CGRect(x: frame.minX, y: mainFrame.minY, width: width, height: mainFrame.height)
+                return CGRect(x: frame.minX, y: mainFrame.minY, width: mainFrame.width, height: mainFrame.height)
             }
             return nil
         }
@@ -781,17 +836,6 @@ extension NSScreen {
             return nil
         }
 
-        // Avoid counting the notch as usable application menu width.
-        if let notch = frameOfNotch {
-            let cappedWidth = min(applicationMenuFrame.width, notch.minX - frame.minX)
-            return CGRect(
-                x: applicationMenuFrame.minX,
-                y: applicationMenuFrame.minY,
-                width: cappedWidth,
-                height: applicationMenuFrame.height
-            )
-        }
-
         return applicationMenuFrame
     }
 }
@@ -799,7 +843,7 @@ extension NSScreen {
 // MARK: - NSStatusItem
 
 extension NSStatusItem {
-    /// Shows the given menu under the status item.
+    @MainActor
     func showMenu(_ menu: NSMenu) {
         let originalMenu = self.menu
         defer {
@@ -847,7 +891,7 @@ extension Publisher {
 
     /// Publishes only non-`nil` elements.
     func removeNil<T>() -> Publishers.CompactMap<Self, T> where Output == T? {
-        compactMap { $0 }
+        compactMap(\.self)
     }
 
     /// Publishes only elements that don't match the previous element.
@@ -885,6 +929,62 @@ extension Publisher {
     }
 }
 
+// MARK: - Publisher (Defaults Persistence)
+
+extension Publisher where Output: Equatable, Failure == Never {
+    /// Binds publisher to UserDefaults, persisting each unique value.
+    ///
+    /// - Parameters:
+    ///   - key: The Defaults key to persist to.
+    ///   - cancellables: The set to store the subscription in.
+    func persistToDefaults(
+        key: Defaults.Key,
+        in cancellables: inout Set<AnyCancellable>
+    ) {
+        self.removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { Defaults.set($0, forKey: key) }
+            .store(in: &cancellables)
+    }
+
+    /// Binds publisher to UserDefaults with transform (e.g., for RawRepresentable enums).
+    ///
+    /// - Parameters:
+    ///   - key: The Defaults key to persist to.
+    ///   - transform: A closure that transforms the output before persisting.
+    ///   - cancellables: The set to store the subscription in.
+    func persistToDefaults(
+        key: Defaults.Key,
+        transform: @escaping (Output) -> some Any,
+        in cancellables: inout Set<AnyCancellable>
+    ) {
+        self.removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { Defaults.set(transform($0), forKey: key) }
+            .store(in: &cancellables)
+    }
+
+    /// Binds publisher to UserDefaults with an additional side effect.
+    ///
+    /// - Parameters:
+    ///   - key: The Defaults key to persist to.
+    ///   - sideEffect: A closure to execute after persisting.
+    ///   - cancellables: The set to store the subscription in.
+    func persistToDefaults(
+        key: Defaults.Key,
+        sideEffect: @escaping (Output) -> Void,
+        in cancellables: inout Set<AnyCancellable>
+    ) {
+        self.removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { value in
+                Defaults.set(value, forKey: key)
+                sideEffect(value)
+            }
+            .store(in: &cancellables)
+    }
+}
+
 // MARK: - RangeReplaceableCollection where Element: Hashable
 
 extension RangeReplaceableCollection where Element: Hashable {
@@ -910,9 +1010,61 @@ extension RangeReplaceableCollection where Element == MenuBarItem {
 
 // MARK: - Sequence where Element == MenuBarItem
 
-extension Sequence where Element == MenuBarItem {
+extension Sequence<MenuBarItem> {
     /// Returns the first menu bar item that matches the specified tag.
     func first(matching tag: MenuBarItemTag) -> MenuBarItem? {
         first { $0.tag == tag }
+    }
+}
+
+// MARK: - NSPanel
+
+extension NSPanel {
+    /// Waits until the panel is no longer visible, or until `timeout` elapses.
+    ///
+    /// Uses KVO on `isVisible` rather than polling, so the caller is resumed
+    /// immediately when the panel hides with no busy-waiting on the main thread.
+    ///
+    /// Must be called on the main actor because `NSPanel.isVisible` is an
+    /// AppKit property that is only safe to read on the main thread.
+    @MainActor
+    func waitUntilClosed(timeout: Duration = .milliseconds(200)) async {
+        guard isVisible else { return }
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await self.waitForInvisibleWithKVO()
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+
+    @MainActor
+    private func waitForInvisibleWithKVO() async {
+        var bag = Set<AnyCancellable>()
+        let claimed = OSAllocatedUnfairLock(initialState: false)
+        let contHolder = OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>(initialState: nil)
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                contHolder.withLock { $0 = cont }
+                self.publisher(for: \.isVisible)
+                    .filter { !$0 }
+                    .first()
+                    .sink { _ in
+                        if claimed.tryClaimOnce() {
+                            contHolder.withLock { $0 }?.resume()
+                        }
+                    }
+                    .store(in: &bag)
+            }
+        } onCancel: {
+            if claimed.tryClaimOnce() {
+                contHolder.withLock { $0 }?.resume()
+            }
+        }
     }
 }

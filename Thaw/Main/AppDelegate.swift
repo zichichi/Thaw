@@ -12,6 +12,10 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The shared app state.
     let appState = AppState()
+    private var isPreparingForTermination = false
+    private var hasRepliedToTerminationRequest = false
+    private var terminationAttemptID = UUID()
+    private var terminationTimeoutTask: Task<Void, Never>?
 
     // MARK: NSApplicationDelegate Methods
 
@@ -93,31 +97,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    func applicationWillTerminate(_: Notification) {
-        appState.diagLog.info("Application will terminate - checking for blocked items to restore")
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isPreparingForTermination else {
+            return .terminateLater
+        }
 
-        // Create a semaphore to wait for the async restore operation
-        let semaphore = DispatchSemaphore(value: 0)
+        let attemptID = UUID()
+        terminationAttemptID = attemptID
+        terminationTimeoutTask?.cancel()
+        isPreparingForTermination = true
+        hasRepliedToTerminationRequest = false
+        appState.diagLog.info("Application asked to terminate - restoring blocked items asynchronously")
 
-        Task {
-            // Only restore items that are stuck at x=-1 (blocked state),
-            // leaving normally hidden items in place
+        Task { @MainActor in
             _ = await appState.itemManager.restoreBlockedItemsToVisible()
-            semaphore.signal()
+            guard terminationAttemptID == attemptID else {
+                return
+            }
+            terminationTimeoutTask?.cancel()
+            replyToTerminationRequest(sender, timedOut: false)
         }
 
-        // Wait up to 5 seconds for the restore to complete
-        let result = semaphore.wait(timeout: .now() + 5)
-        if result == .timedOut {
-            appState.diagLog.warning("Blocked item restore operation timed out during app termination")
-        } else {
-            appState.diagLog.info("Blocked item restore operation completed during app termination")
+        terminationTimeoutTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+            guard terminationAttemptID == attemptID else {
+                return
+            }
+            replyToTerminationRequest(sender, timedOut: true)
         }
+
+        return .terminateLater
+    }
+
+    func applicationWillTerminate(_: Notification) {
+        appState.diagLog.info("Application will terminate")
     }
 
     // MARK: Other Methods
 
-    /// Handles `kAEGetURL` Apple Events and forwards `thaw://` URLs to `handleURL(_:)`.
+    /// Handles `kAEGetURL` Apple Events and forwards `thaw://` URLs to `handleURL(_:senderBundleId:)`.
     @objc private func handleURLAppleEvent(
         _ event: NSAppleEventDescriptor,
         withReplyEvent _: NSAppleEventDescriptor
@@ -127,20 +149,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let url = URL(string: urlString),
             url.scheme?.lowercased() == "thaw"
         else { return }
-        handleURL(url)
+
+        // Extract sender bundle ID from the Apple Event
+        let senderBundleId = extractSenderBundleId(from: event)
+        handleURL(url, senderBundleId: senderBundleId)
+    }
+
+    /// Extracts the sender's bundle identifier from an Apple Event.
+    private func extractSenderBundleId(from event: NSAppleEventDescriptor) -> String? {
+        let keySenderPID = AEKeyword(keySenderPIDAttr)
+
+        guard let pidDesc = event.attributeDescriptor(forKeyword: keySenderPID) else {
+            return nil
+        }
+
+        // macOS 26 stores keySenderPIDAttr as typeUInt32 ('magn') on arm64.
+        // Accept any numeric type and extract the PID from raw descriptor data.
+        let integerTypes: Set<OSType> = [
+            typeSInt16, typeSInt32, typeSInt64,
+            typeUInt16, typeUInt32, typeUInt64,
+            typeIEEE32BitFloatingPoint, typeIEEE64BitFloatingPoint,
+        ]
+
+        var pid: pid_t = 0
+
+        if integerTypes.contains(pidDesc.descriptorType) {
+            // Copy raw bytes regardless of storage type (typeUInt32, typeSInt64, etc.)
+            let data = pidDesc.data
+            let copyCount = min(data.count, MemoryLayout<pid_t>.size)
+            data.withUnsafeBytes { src in
+                withUnsafeMutableBytes(of: &pid) { dest in
+                    guard let srcPtr = src.baseAddress, let destPtr = dest.baseAddress else { return }
+                    memcpy(destPtr, srcPtr, copyCount)
+                }
+            }
+        } else {
+            // Fallback: try coercion for unknown types
+            let coerced = pidDesc.int32Value
+            guard coerced > 0 else { return nil }
+            pid = pid_t(coerced)
+        }
+
+        guard pid > 0 else { return nil }
+
+        guard let app = NSRunningApplication(processIdentifier: pid) else {
+            return nil
+        }
+
+        return app.bundleIdentifier
     }
 
     /// Dispatches an incoming `thaw://` URL to the appropriate action.
     ///
-    /// Supported URLs:
+    /// Supported Action URLs:
     /// - `thaw://toggle-hidden` — toggle the hidden menu bar section
     /// - `thaw://toggle-always-hidden` — toggle the always-hidden menu bar section
     /// - `thaw://search` — open the menu bar item search panel
     /// - `thaw://toggle-thawbar` — toggle the IceBar on the active display
     /// - `thaw://toggle-application-menus` — toggle application menus
     /// - `thaw://open-settings` — open the Thaw settings window
-    private func handleURL(_ url: URL) {
+    ///
+    /// Supported Settings URLs (requires whitelist authorization):
+    /// - `thaw://set?key=X&value=Y` — set a boolean setting
+    /// - `thaw://toggle?key=X` — toggle a boolean setting
+    private func handleURL(_ url: URL, senderBundleId: String? = nil) {
         let host = url.host?.lowercased() ?? ""
+
+        // Handle settings manipulation URLs
+        switch host {
+        case "set", "toggle", "get", "authorize":
+            handleSettingsURL(url, host: host, senderBundleId: senderBundleId)
+            return
+        default:
+            break
+        }
+
+        // Handle action URLs
         switch host {
         case "toggle-hidden":
             HotkeyAction.toggleHiddenSection.perform(appState: appState)
@@ -159,14 +243,187 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Handles settings manipulation URLs (set/toggle).
+    private func handleSettingsURL(_ url: URL, host: String, senderBundleId: String?) {
+        // Check if Settings URI feature is enabled
+        guard SettingsURIHandler.isEnabled() else {
+            appState.diagLog.debug("Settings URI is disabled, ignoring: \(url.absoluteString)")
+            return
+        }
+
+        // Handle version get request without auth (read-only metadata)
+        if host == "get",
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           components.queryItems?.first(where: { $0.name == "key" })?.value == "version"
+        {
+            handleGetURL(url, sender: nil)
+            return
+        }
+
+        // Determine effective bundle ID (auto-detected or manual override)
+        guard let effectiveBundleId = determineEffectiveBundleId(url: url, senderBundleId: senderBundleId) else {
+            appState.diagLog.debug("Settings URI: Cannot determine sender bundle ID, ignoring: \(url.absoluteString)")
+            return
+        }
+
+        // Handle authorize request - triggers auth dialog if not already authorized
+        if host == "authorize" {
+            if !SettingsURIHandler.isWhitelisted(bundleIdentifier: effectiveBundleId) {
+                _ = SettingsURIHandler.promptForAuthorization(bundleId: effectiveBundleId)
+            }
+            return
+        }
+
+        // Verify sender is whitelisted, or prompt for first-time authorization
+        if !SettingsURIHandler.isWhitelisted(bundleIdentifier: effectiveBundleId) {
+            // Show confirmation dialog
+            let approved = SettingsURIHandler.promptForAuthorization(bundleId: effectiveBundleId)
+            guard approved else {
+                // Unauthorized - silent fail
+                return
+            }
+        }
+
+        // Process the settings URL
+        switch host {
+        case "set":
+            handleSetURL(url, sender: effectiveBundleId)
+        case "toggle":
+            handleToggleURL(url, sender: effectiveBundleId)
+        case "get":
+            handleGetURL(url, sender: effectiveBundleId)
+        default:
+            break
+        }
+    }
+
+    /// Determines the effective bundle ID for authorization.
+    /// Uses manual override (DEBUG only) if auto-detection fails.
+    private func determineEffectiveBundleId(url: URL, senderBundleId: String?) -> String? {
+        // If we have auto-detected sender, use it
+        if let sender = senderBundleId {
+            return sender
+        }
+
+        #if DEBUG
+            // In DEBUG builds, allow manual bundleId override for testing
+            // when auto-detection fails (e.g., from Terminal 'open' command)
+            if let manualBundleId = extractManualBundleId(from: url) {
+                appState.diagLog.warning("Settings URI: Using DEBUG manual bundleId=\(manualBundleId) - FOR TESTING ONLY")
+                return manualBundleId
+            }
+        #endif
+
+        return nil
+    }
+
+    private func replyToTerminationRequest(
+        _ sender: NSApplication,
+        timedOut: Bool
+    ) {
+        guard !hasRepliedToTerminationRequest else {
+            return
+        }
+
+        hasRepliedToTerminationRequest = true
+        isPreparingForTermination = false
+        terminationTimeoutTask?.cancel()
+        terminationTimeoutTask = nil
+
+        if timedOut {
+            appState.diagLog.warning("Blocked item restore operation timed out during app termination")
+        } else {
+            appState.diagLog.info("Blocked item restore operation completed during app termination")
+        }
+
+        sender.reply(toApplicationShouldTerminate: true)
+    }
+
+    #if DEBUG
+        /// Extracts manual bundleId from URL query parameter (DEBUG builds only).
+        private func extractManualBundleId(from url: URL) -> String? {
+            guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let bundleId = components.queryItems?.first(where: { $0.name == "bundleId" })?.value,
+                  !bundleId.isEmpty
+            else {
+                return nil
+            }
+            return bundleId
+        }
+    #endif
+
+    /// Handles thaw://set?key=X&value=Y URL.
+    private func handleSetURL(_ url: URL, sender: String?) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let key = components.queryItems?.first(where: { $0.name == "key" })?.value,
+              let value = components.queryItems?.first(where: { $0.name == "value" })?.value
+        else {
+            appState.diagLog.warning("Settings URI set: missing key or value in \(url.absoluteString)")
+            return
+        }
+
+        // Extract optional display UUID parameter for per-display settings
+        let displayUUID = components.queryItems?.first(where: { $0.name == "display" })?.value
+
+        let success = SettingsURIHandler.handleSet(key: key, value: value, sender: sender, displayUUID: displayUUID)
+        if !success {
+            appState.diagLog.warning("Settings URI set: failed to set \(key) = \(value)")
+        }
+    }
+
+    /// Handles thaw://toggle?key=X URL.
+    private func handleToggleURL(_ url: URL, sender: String?) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let key = components.queryItems?.first(where: { $0.name == "key" })?.value
+        else {
+            appState.diagLog.warning("Settings URI toggle: missing key in \(url.absoluteString)")
+            return
+        }
+
+        // Extract optional display UUID parameter for per-display settings
+        let displayUUID = components.queryItems?.first(where: { $0.name == "display" })?.value
+
+        let success = SettingsURIHandler.handleToggle(key: key, sender: sender, displayUUID: displayUUID)
+        if !success {
+            appState.diagLog.warning("Settings URI toggle: failed to toggle \(key)")
+        }
+    }
+
+    /// Handles thaw://get?key=X&callback=Y URLs.
+    private func handleGetURL(_ url: URL, sender _: String?) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            appState.diagLog.warning("Settings URI get: invalid URL \(url.absoluteString)")
+            return
+        }
+
+        // Extract parameters
+        let key = components.queryItems?.first(where: { $0.name == "key" })?.value
+        let displayUUID = components.queryItems?.first(where: { $0.name == "display" })?.value
+        let callback = components.queryItems?.first(where: { $0.name == "callback" })?.value
+        let broadcast = components.queryItems?.first(where: { $0.name == "broadcast" })?.value == "true"
+        let requestId = components.queryItems?.first(where: { $0.name == "requestId" })?.value
+
+        let success = SettingsURIHandler.handleGet(
+            key: key,
+            displayUUID: displayUUID,
+            callback: callback,
+            broadcast: broadcast,
+            requestId: requestId
+        )
+
+        if !success {
+            appState.diagLog.warning("Settings URI get: failed to get \(key ?? "unknown")")
+        }
+    }
+
     /// Opens the settings window and activates the app.
     @objc func openSettingsWindow() {
         // Always allow opening settings window from menu item clicks
         // This ensures clicking app icon, dock icon or menu bar item works correctly
         appState.diagLog.debug("Opening settings window from app icon/dock/menu click")
 
-        // Delay makes this more reliable for some reason.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [appState] in
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(100))
             appState.activate(withPolicy: .regular)
             appState.openWindow(.settings)
         }

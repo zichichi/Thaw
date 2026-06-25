@@ -39,14 +39,14 @@ final class GeneralSettings: ObservableObject {
     /// in a separate bar below the menu bar.
     @Published var useIceBar = Defaults.DefaultValue.useIceBar
 
-    /// A Boolean value that indicates whether to use the Ice Bar
+    /// A Boolean value that indicates whether to use the Thaw Bar
     /// only on displays with a notch.
     @Published var useIceBarOnlyOnNotchedDisplay = Defaults.DefaultValue.useIceBarOnlyOnNotchedDisplay
 
-    /// The location where the Ice Bar appears.
+    /// The location where the Thaw Bar appears.
     @Published var iceBarLocation = Defaults.DefaultValue.iceBarLocation
 
-    /// A Boolean value that indicates whether the Ice Bar should
+    /// A Boolean value that indicates whether the Thaw Bar should
     /// appear at the mouse pointer's location when shown by a hotkey.
     @Published var iceBarLocationOnHotkey = Defaults.DefaultValue.iceBarLocationOnHotkey
 
@@ -70,8 +70,7 @@ final class GeneralSettings: ObservableObject {
     /// menu bar.
     @Published var showOnScroll = Defaults.DefaultValue.showOnScroll
 
-    /// The offset to apply to the menu bar item spacing and padding.
-    @Published var itemSpacingOffset = Defaults.DefaultValue.itemSpacingOffset
+    // The offset to apply to the menu bar item spacing and padding.
 
     /// A Boolean value that indicates whether the hidden section
     /// should automatically rehide.
@@ -114,7 +113,6 @@ final class GeneralSettings: ObservableObject {
         Defaults.ifPresent(key: .showOnDoubleClick, assign: &showOnDoubleClick)
         Defaults.ifPresent(key: .showOnHover, assign: &showOnHover)
         Defaults.ifPresent(key: .showOnScroll, assign: &showOnScroll)
-        Defaults.ifPresent(key: .itemSpacingOffset, assign: &itemSpacingOffset)
         Defaults.ifPresent(key: .autoRehide, assign: &autoRehide)
         Defaults.ifPresent(key: .rehideInterval, assign: &rehideInterval)
 
@@ -145,14 +143,11 @@ final class GeneralSettings: ObservableObject {
     private func configureCancellables() {
         var c = Set<AnyCancellable>()
 
-        $showIceIcon
-            .receive(on: DispatchQueue.main)
-            .sink { showIceIcon in
-                Defaults.set(showIceIcon, forKey: .showIceIcon)
-            }
-            .store(in: &c)
+        $showIceIcon.persistToDefaults(key: .showIceIcon, in: &c)
 
+        // iceIcon requires encoding + custom icon tracking - keep manual
         $iceIcon
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] iceIcon in
                 guard let self else {
@@ -170,98 +165,87 @@ final class GeneralSettings: ObservableObject {
             }
             .store(in: &c)
 
-        $customIceIconIsTemplate
-            .receive(on: DispatchQueue.main)
-            .sink { isTemplate in
-                Defaults.set(isTemplate, forKey: .customIceIconIsTemplate)
-            }
-            .store(in: &c)
+        $customIceIconIsTemplate.persistToDefaults(key: .customIceIconIsTemplate, in: &c)
+        $useIceBar.persistToDefaults(key: .useIceBar, in: &c)
+        $useIceBarOnlyOnNotchedDisplay.persistToDefaults(key: .useIceBarOnlyOnNotchedDisplay, in: &c)
+        $iceBarLocation.persistToDefaults(key: .iceBarLocation, transform: \.rawValue, in: &c)
+        $iceBarLocationOnHotkey.persistToDefaults(key: .iceBarLocationOnHotkey, in: &c)
+        $showOnClick.persistToDefaults(key: .showOnClick, in: &c)
+        $showOnDoubleClick.persistToDefaults(key: .showOnDoubleClick, in: &c)
+        $showOnHover.persistToDefaults(key: .showOnHover, in: &c)
+        $showOnScroll.persistToDefaults(key: .showOnScroll, in: &c)
+        $autoRehide.persistToDefaults(key: .autoRehide, in: &c)
+        $rehideStrategy.persistToDefaults(key: .rehideStrategy, transform: \.rawValue, in: &c)
+        $rehideInterval.persistToDefaults(key: .rehideInterval, in: &c)
 
-        $useIceBar
+        // Observe external settings changes via Settings URI
+        NotificationCenter.default
+            .publisher(for: .settingsDidChangeViaURI)
             .receive(on: DispatchQueue.main)
-            .sink { useIceBar in
-                Defaults.set(useIceBar, forKey: .useIceBar)
-            }
-            .store(in: &c)
-
-        $useIceBarOnlyOnNotchedDisplay
-            .receive(on: DispatchQueue.main)
-            .sink { useIceBarOnlyOnNotchedDisplay in
-                Defaults.set(useIceBarOnlyOnNotchedDisplay, forKey: .useIceBarOnlyOnNotchedDisplay)
-            }
-            .store(in: &c)
-
-        $iceBarLocation
-            .receive(on: DispatchQueue.main)
-            .sink { location in
-                Defaults.set(location.rawValue, forKey: .iceBarLocation)
-            }
-            .store(in: &c)
-
-        $iceBarLocationOnHotkey
-            .receive(on: DispatchQueue.main)
-            .sink { iceBarLocationOnHotkey in
-                Defaults.set(iceBarLocationOnHotkey, forKey: .iceBarLocationOnHotkey)
-            }
-            .store(in: &c)
-
-        $showOnClick
-            .receive(on: DispatchQueue.main)
-            .sink { showOnClick in
-                Defaults.set(showOnClick, forKey: .showOnClick)
-            }
-            .store(in: &c)
-
-        $showOnDoubleClick
-            .receive(on: DispatchQueue.main)
-            .sink { showOnDoubleClick in
-                Defaults.set(showOnDoubleClick, forKey: .showOnDoubleClick)
-            }
-            .store(in: &c)
-
-        $showOnHover
-            .receive(on: DispatchQueue.main)
-            .sink { showOnHover in
-                Defaults.set(showOnHover, forKey: .showOnHover)
-            }
-            .store(in: &c)
-
-        $showOnScroll
-            .receive(on: DispatchQueue.main)
-            .sink { showOnScroll in
-                Defaults.set(showOnScroll, forKey: .showOnScroll)
-            }
-            .store(in: &c)
-
-        $itemSpacingOffset
-            .receive(on: DispatchQueue.main)
-            .sink { [weak appState] offset in
-                Defaults.set(offset, forKey: .itemSpacingOffset)
-                appState?.spacingManager.offset = Int(offset)
-            }
-            .store(in: &c)
-
-        $autoRehide
-            .receive(on: DispatchQueue.main)
-            .sink { autoRehide in
-                Defaults.set(autoRehide, forKey: .autoRehide)
-            }
-            .store(in: &c)
-
-        $rehideStrategy
-            .receive(on: DispatchQueue.main)
-            .sink { strategy in
-                Defaults.set(strategy.rawValue, forKey: .rehideStrategy)
-            }
-            .store(in: &c)
-
-        $rehideInterval
-            .receive(on: DispatchQueue.main)
-            .sink { interval in
-                Defaults.set(interval, forKey: .rehideInterval)
+            .sink { [weak self] notification in
+                self?.handleExternalSettingsChange(notification)
             }
             .store(in: &c)
 
         cancellables = c
+    }
+
+    /// Handles settings changed externally via Settings URI scheme.
+    private func handleExternalSettingsChange(_ notification: Notification) {
+        guard let key = notification.userInfo?["key"] as? String else {
+            return
+        }
+
+        // Handle boolean values
+        if let boolValue = notification.userInfo?["value"] as? Bool {
+            diagLog.debug("GeneralSettings: Received external change for \(key) = \(boolValue)")
+
+            switch key {
+            case "showIceIcon" where showIceIcon != boolValue:
+                showIceIcon = boolValue
+            case "customIceIconIsTemplate" where customIceIconIsTemplate != boolValue:
+                customIceIconIsTemplate = boolValue
+            case "useIceBar" where useIceBar != boolValue:
+                useIceBar = boolValue
+            case "useIceBarOnlyOnNotchedDisplay" where useIceBarOnlyOnNotchedDisplay != boolValue:
+                useIceBarOnlyOnNotchedDisplay = boolValue
+            case "iceBarLocationOnHotkey" where iceBarLocationOnHotkey != boolValue:
+                iceBarLocationOnHotkey = boolValue
+            case "showOnClick" where showOnClick != boolValue:
+                showOnClick = boolValue
+            case "showOnDoubleClick" where showOnDoubleClick != boolValue:
+                showOnDoubleClick = boolValue
+            case "showOnHover" where showOnHover != boolValue:
+                showOnHover = boolValue
+            case "showOnScroll" where showOnScroll != boolValue:
+                showOnScroll = boolValue
+            case "autoRehide" where autoRehide != boolValue:
+                autoRehide = boolValue
+            default:
+                // Key not handled by GeneralSettings or value unchanged
+                break
+            }
+        }
+
+        // Handle double values
+        if let doubleValue = notification.userInfo?["doubleValue"] as? Double {
+            diagLog.debug("GeneralSettings: Received external change for \(key) = \(doubleValue)")
+
+            if key == "rehideInterval", rehideInterval != doubleValue {
+                rehideInterval = doubleValue
+            }
+        }
+
+        // Handle enum values (raw integers)
+        if let rawEnumValue = notification.userInfo?["rawEnumValue"] as? Int {
+            diagLog.debug("GeneralSettings: Received external change for \(key) = \(rawEnumValue)")
+
+            if key == "rehideStrategy",
+               let strategy = RehideStrategy(rawValue: rawEnumValue),
+               rehideStrategy != strategy
+            {
+                rehideStrategy = strategy
+            }
+        }
     }
 }

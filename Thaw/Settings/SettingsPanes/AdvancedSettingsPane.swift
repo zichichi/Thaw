@@ -39,8 +39,17 @@ struct AdvancedSettingsPane: View {
         IceForm {
             IceSection("Menu Bar Sections") {
                 enableAlwaysHiddenSection
+                if settings.enableAlwaysHiddenSection {
+                    useOptionClickToShowAlwaysHiddenSection
+                    if appState.settings.general.showIceIcon {
+                        useDoubleClickToShowAlwaysHiddenSection
+                    }
+                }
                 showAllSectionsOnUserDrag
                 sectionDividerStyle
+            }
+            IceSection("Search") {
+                searchSectionOrdering
             }
             IceSection("Tooltips") {
                 if ScreenCapture.cachedCheckPermissions() {
@@ -55,8 +64,13 @@ struct AdvancedSettingsPane: View {
                 }
             }
             IceSection("Other") {
+                enableMenuBarItemOverflow
+                useLCSSortingOnNotchedDisplays
                 hideApplicationMenus
                 enableSecondaryContextMenu
+                if settings.enableSecondaryContextMenu {
+                    enableSecondaryContextMenuQuit
+                }
                 showIceBarAtMouseLocationOnHotkey
                 showOnHoverDelay
                 iconRefreshInterval
@@ -109,6 +123,20 @@ struct AdvancedSettingsPane: View {
         )
     }
 
+    private var useOptionClickToShowAlwaysHiddenSection: some View {
+        Toggle(
+            "Use Option-click to open always-hidden section",
+            isOn: $settings.useOptionClickToShowAlwaysHiddenSection
+        )
+    }
+
+    private var useDoubleClickToShowAlwaysHiddenSection: some View {
+        Toggle(
+            "Double-click \(Constants.displayName) icon to open always-hidden section",
+            isOn: $settings.useDoubleClickToShowAlwaysHiddenSection
+        )
+    }
+
     private var showAllSectionsOnUserDrag: some View {
         Toggle(
             "Show all sections when ⌘ Command + dragging menu bar items",
@@ -121,6 +149,124 @@ struct AdvancedSettingsPane: View {
             ForEach(SectionDividerStyle.allCases) { style in
                 Text(style.localized).tag(style)
             }
+        }
+    }
+
+    private var displayedSearchSectionNames: [MenuBarSection.Name] {
+        settings.searchSectionOrder.filter { name in
+            name != .alwaysHidden || settings.enableAlwaysHiddenSection
+        }
+    }
+
+    private var searchSectionOrdering: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(displayedSearchSectionNames, id: \.self) { name in
+                searchSectionRow(for: name)
+            }
+        }
+        .animation(.default, value: settings.searchSectionOrder)
+        .animation(.default, value: settings.enableAlwaysHiddenSection)
+        .annotation("Choose which menu bar sections appear in the search panel, and in what order. Use the up and down buttons to reorder, and turn off a section to exclude its items from search results.")
+    }
+
+    @ViewBuilder
+    private func searchSectionRow(for name: MenuBarSection.Name) -> some View {
+        let displayed = displayedSearchSectionNames
+        let position = displayed.firstIndex(of: name) ?? 0
+        let isFirst = position == 0
+        let isLast = position == displayed.count - 1
+        HStack(spacing: 8) {
+            Text(name.localized)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                moveSearchSection(name, by: -1)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.borderless)
+            .disabled(isFirst)
+            .accessibilityLabel(String(localized: "Move up"))
+            Button {
+                moveSearchSection(name, by: 1)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.borderless)
+            .disabled(isLast)
+            .accessibilityLabel(String(localized: "Move down"))
+            Toggle(name.localized, isOn: searchInclusionBinding(for: name))
+                .labelsHidden()
+        }
+    }
+
+    private func searchInclusionBinding(for name: MenuBarSection.Name) -> Binding<Bool> {
+        switch name {
+        case .visible:
+            return $settings.searchIncludeVisible
+        case .hidden:
+            return $settings.searchIncludeHidden
+        case .alwaysHidden:
+            return $settings.searchIncludeAlwaysHidden
+        }
+    }
+
+    private func moveSearchSection(_ name: MenuBarSection.Name, by offset: Int) {
+        // Swap by the user-visible neighbour so the move is predictable when
+        // the always-hidden row is conditionally hidden from this list.
+        let displayed = displayedSearchSectionNames
+        guard let displayIndex = displayed.firstIndex(of: name) else {
+            return
+        }
+        let displayTarget = displayIndex + offset
+        guard displayed.indices.contains(displayTarget) else {
+            return
+        }
+        let other = displayed[displayTarget]
+        guard
+            let index = settings.searchSectionOrder.firstIndex(of: name),
+            let otherIndex = settings.searchSectionOrder.firstIndex(of: other)
+        else {
+            return
+        }
+        var order = settings.searchSectionOrder
+        order.swapAt(index, otherIndex)
+        settings.searchSectionOrder = order
+    }
+
+    private var enableMenuBarItemOverflow: some View {
+        Toggle(
+            "Enable menu bar item overflow",
+            isOn: $settings.enableMenuBarItemOverflow
+        )
+        .annotation {
+            Text(
+                """
+                Move menu bar items from the visible section into the hidden \
+                section when they don't fit beside the notch on a notched \
+                display. Disable to keep the saved profile layout exactly as \
+                authored even when items would otherwise be pushed under the \
+                notch.
+                """
+            )
+            .padding(.trailing, 75)
+        }
+    }
+
+    private var useLCSSortingOnNotchedDisplays: some View {
+        Toggle(
+            "Use LCS sorting on notched displays",
+            isOn: $settings.useLCSSortingOnNotchedDisplays
+        )
+        .annotation {
+            Text(
+                """
+                Use the faster LCS (Longest Common Subsequence) algorithm for \
+                profile sorting on notched displays instead of the full sort. \
+                LCS minimises the number of moves but may be less reliable on \
+                notched displays with smaller resolutions.
+                """
+            )
+            .padding(.trailing, 75)
         }
     }
 
@@ -152,6 +298,21 @@ struct AdvancedSettingsPane: View {
                 Right-click in an empty area of the menu bar to display a minimal \
                 version of \(Constants.displayName)'s menu. Disable this setting if you encounter conflicts \
                 with other apps.
+                """
+            )
+            .padding(.trailing, 75)
+        }
+    }
+
+    private var enableSecondaryContextMenuQuit: some View {
+        Toggle(
+            "Enable secondary context menu quit",
+            isOn: $settings.enableSecondaryContextMenuQuit
+        )
+        .annotation {
+            Text(
+                """
+                Add a Quit \(Constants.displayName) item to the bottom of the secondary context menu.
                 """
             )
             .padding(.trailing, 75)
@@ -191,16 +352,21 @@ struct AdvancedSettingsPane: View {
 
     private var iconRefreshInterval: some View {
         let fpsBinding = Binding<Double>(
-            get: { (1.0 / settings.iconRefreshInterval).rounded() },
-            set: { settings.iconRefreshInterval = 1.0 / $0 }
+            get: {
+                let interval = settings.iconRefreshInterval
+                return interval > 0 ? (1.0 / interval).rounded() : 0
+            },
+            set: { settings.iconRefreshInterval = $0 > 0 ? 1.0 / $0 : 0 }
         )
         return LabeledContent {
             IceSlider(
                 value: fpsBinding,
-                in: 1 ... 30,
+                in: 0 ... 30,
                 step: 1
             ) {
-                Text("\(Int(fpsBinding.wrappedValue)) fps")
+                Text(fpsBinding.wrappedValue > 0
+                    ? "\(Int(fpsBinding.wrappedValue)) fps"
+                    : "Off")
             }
         } label: {
             Text("Icon refresh rate")

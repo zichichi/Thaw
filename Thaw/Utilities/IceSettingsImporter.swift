@@ -66,7 +66,7 @@ struct IceSettingsImporter {
             (.showIceIcon, "ShowIceIcon"),
             (.iceIcon, "IceIcon"),
             (.customIceIconIsTemplate, "CustomIceIconIsTemplate"),
-            // Legacy Ice Bar keys kept for migration compatibility
+            // Legacy Thaw Bar keys kept for migration compatibility
             (.useIceBar, "UseIceBar"),
             (.iceBarLocation, "IceBarLocation"),
             (.showOnClick, "ShowOnClick"),
@@ -75,7 +75,6 @@ struct IceSettingsImporter {
             (.autoRehide, "AutoRehide"),
             (.rehideStrategy, "RehideStrategy"),
             (.rehideInterval, "RehideInterval"),
-            (.itemSpacingOffset, "ItemSpacingOffset"),
         ]
 
         for (key, iceKey) in mappings {
@@ -86,13 +85,13 @@ struct IceSettingsImporter {
             }
         }
 
-        // Generate per-display configurations when importing Ice Bar settings
+        // Generate per-display configurations when importing Thaw Bar settings
         imported += importPerDisplayIceBarSettings(from: iceSettings)
 
         return imported
     }
 
-    /// Generates per-display Ice Bar configurations from imported Ice settings.
+    /// Generates per-display Thaw Bar configurations from imported Ice settings.
     private func importPerDisplayIceBarSettings(from iceSettings: [String: Any]) -> Int {
         guard let useIceBar = iceSettings["UseIceBar"] as? Bool, useIceBar else {
             return 0
@@ -114,10 +113,10 @@ struct IceSettingsImporter {
             let data = try encoder.encode(configs)
             Defaults.set(data, forKey: .displayIceBarConfigurations)
             Defaults.set(true, forKey: .hasMigratedPerDisplayIceBar)
-            diagLog.info("Generated per-display Ice Bar configs for \(configs.count) display(s) from Ice import")
+            diagLog.info("Generated per-display Thaw Bar configs for \(configs.count) display(s) from Ice import")
             return 1
         } catch {
-            diagLog.error("Failed to encode per-display Ice Bar configs during import: \(error)")
+            diagLog.error("Failed to encode per-display Thaw Bar configs during import: \(error)")
             return 0
         }
     }

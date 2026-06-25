@@ -6,7 +6,7 @@
 //  Copyright (Thaw) © 2026 Toni Förster
 //  Licensed under the GNU GPLv3
 
-import LaunchAtLogin
+@preconcurrency import LaunchAtLogin
 import SwiftUI
 
 struct GeneralSettingsPane: View {
@@ -15,17 +15,6 @@ struct GeneralSettingsPane: View {
     @State private var isImportingCustomIceIcon = false
     @State private var isPresentingError = false
     @State private var presentedError: LocalizedErrorWrapper?
-    @State private var isApplyingItemSpacingOffset = false
-    @State private var tempItemSpacingOffset: CGFloat = 0
-
-    private var itemSpacingOffsetKey: LocalizedStringKey {
-        switch tempItemSpacingOffset {
-        case -16: "none"
-        case 0: "default"
-        case 16: "max"
-        default: LocalizedStringKey(tempItemSpacingOffset.formatted())
-        }
-    }
 
     private var rehideIntervalKey: LocalizedStringKey {
         let count = Int(settings.rehideInterval)
@@ -45,9 +34,6 @@ struct GeneralSettingsPane: View {
             }
             IceSection {
                 rehideOptions
-            }
-            IceSection {
-                spacingOptions
             }
         }
     }
@@ -153,12 +139,11 @@ struct GeneralSettingsPane: View {
             Text(imageSet.name.localized)
         } icon: {
             if let nsImage = imageSet.hidden.nsImage(for: appState) {
-                switch imageSet.name {
-                case .custom:
+                if imageSet.name == .custom {
                     Image(size: CGSize(width: 18, height: 18)) { context in
                         context.draw(Image(nsImage: nsImage), in: context.clipBoundingRect)
                     }
-                default:
+                } else {
                     Image(nsImage: nsImage)
                 }
             }
@@ -173,7 +158,7 @@ struct GeneralSettingsPane: View {
             Toggle("Show on click", isOn: $settings.showOnClick)
                 .annotation("Click an empty area of the menu bar to show hidden menu bar items.")
 
-            if settings.showOnClick {
+            if settings.showOnClick, appState.settings.advanced.enableAlwaysHiddenSection {
                 Toggle("Double-click for always-hidden", isOn: $settings.showOnDoubleClick)
                     .annotation("Double-click an empty area of the menu bar to show always-hidden menu bar items.")
             }
@@ -224,77 +209,6 @@ struct GeneralSettingsPane: View {
                     step: 1
                 )
             }
-        }
-    }
-
-    // MARK: Spacing Options
-
-    private var spacingOptions: some View {
-        LabeledContent {
-            IceSlider(
-                itemSpacingOffsetKey,
-                value: $tempItemSpacingOffset,
-                in: -16 ... 16,
-                step: 2
-            )
-            .disabled(isApplyingItemSpacingOffset)
-        } label: {
-            LabeledContent {
-                Button("Apply") {
-                    applyTempItemSpacingOffset()
-                }
-                .help(Text("Apply the current spacing"))
-                .disabled(isApplyingItemSpacingOffset || tempItemSpacingOffset == settings.itemSpacingOffset)
-
-                if isApplyingItemSpacingOffset {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.5)
-                        .frame(width: 15, height: 15)
-                } else {
-                    Button {
-                        tempItemSpacingOffset = 0
-                        applyTempItemSpacingOffset()
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise.circle.fill")
-                    }
-                    .buttonStyle(.borderless)
-                    .help(Text("Reset to the default spacing"))
-                    .disabled(isApplyingItemSpacingOffset || settings.itemSpacingOffset == 0)
-                }
-            } label: {
-                HStack {
-                    Text("Menu bar item spacing")
-                    BetaBadge()
-                }
-            }
-        }
-        .annotation(
-            "Applying this setting will relaunch all apps with menu bar items. Some apps may need to be manually relaunched.",
-            spacing: 2
-        )
-        .annotation(spacing: 10) {
-            CalloutBox(
-                "Note: You may need to log out and back in for this setting to apply properly.",
-                systemImage: "exclamationmark.circle"
-            )
-        }
-        .onAppear {
-            tempItemSpacingOffset = settings.itemSpacingOffset
-        }
-    }
-
-    private func applyTempItemSpacingOffset() {
-        isApplyingItemSpacingOffset = true
-        settings.itemSpacingOffset = tempItemSpacingOffset
-        Task {
-            do {
-                try await appState.spacingManager.applyOffset()
-            } catch {
-                let alert = NSAlert(error: error)
-                alert.runModal()
-            }
-            isApplyingItemSpacingOffset = false
         }
     }
 }

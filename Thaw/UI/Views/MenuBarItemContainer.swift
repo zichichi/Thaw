@@ -24,6 +24,7 @@ struct MenuBarItemContainer<Content: View>: View {
     @ObservedObject private var menuBarManager: MenuBarManager
 
     private let accessor: ColorInfoAccessor
+    private let screen: NSScreen?
     private let content: Content
 
     private var colorInfo: MenuBarAverageColorInfo? {
@@ -36,18 +37,19 @@ struct MenuBarItemContainer<Content: View>: View {
     }
 
     private var foreground: Color {
-        colorInfo?.isBright == true ? .black : .white
+        colorInfo?.isBright(for: screen) == true ? .black : .white
     }
 
     private var configuration: MenuBarAppearancePartialConfiguration {
         appearanceManager.configuration.current
     }
 
-    init(appState: AppState, accessor: ColorInfoAccessor, @ViewBuilder content: () -> Content) {
+    init(appState: AppState, accessor: ColorInfoAccessor, screen: NSScreen? = nil, @ViewBuilder content: () -> Content) {
         self.appState = appState
         self.appearanceManager = appState.appearanceManager
         self.menuBarManager = appState.menuBarManager
         self.accessor = accessor
+        self.screen = screen
         self.content = content()
     }
 
@@ -66,10 +68,12 @@ struct MenuBarItemContainer<Content: View>: View {
 
     @ViewBuilder
     private var contentBackground: some View {
-        if appState.activeSpace.isFullscreen {
-            Color.black
-        } else if let colorInfo {
+        if let colorInfo {
+            // Trust sampled color when available - it reflects the actual
+            // space where the window is displayed.
             Color(cgColor: colorInfo.color)
+        } else if appState.activeSpace.isFullscreen {
+            Color.black
         } else {
             Color.defaultLayoutBar
         }
@@ -77,7 +81,9 @@ struct MenuBarItemContainer<Content: View>: View {
 
     @ViewBuilder
     private var contentOverlay: some View {
-        if !appState.activeSpace.isFullscreen {
+        // Show tint when we have sampled color info (window on non-fullscreen space)
+        // or when activeSpace is not fullscreen.
+        if colorInfo != nil || !appState.activeSpace.isFullscreen {
             if case .solid = configuration.tintKind {
                 Color(cgColor: configuration.tintColor)
             } else if
@@ -114,7 +120,9 @@ extension View {
     /// - Parameters:
     ///   - appState: The shared ``AppState`` object.
     ///   - colorInfo: Information for the average color of the menu bar.
-    func menuBarItemContainer(appState: AppState, colorInfo: MenuBarAverageColorInfo?) -> some View {
-        MenuBarItemContainer(appState: appState, accessor: .manual(colorInfo)) { self }
+    ///   - screen: The screen where the container is displayed, used to determine
+    ///     the appropriate brightness threshold for notched displays.
+    func menuBarItemContainer(appState: AppState, colorInfo: MenuBarAverageColorInfo?, screen: NSScreen? = nil) -> some View {
+        MenuBarItemContainer(appState: appState, accessor: .manual(colorInfo), screen: screen) { self }
     }
 }

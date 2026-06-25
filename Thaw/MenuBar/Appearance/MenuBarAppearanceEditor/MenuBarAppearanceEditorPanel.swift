@@ -49,8 +49,7 @@ final class MenuBarAppearanceEditorPanel: NSObject, NSPopoverDelegate {
         updateContentSize()
         popover?.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .maxY)
 
-        // Ensure the popover takes focus when shown.
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             NSApp.activate(ignoringOtherApps: true)
             self?.popover?.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
         }
@@ -164,7 +163,7 @@ private final class MenuBarAppearanceEditorHostingController: NSHostingControlle
 
         appState.appearanceManager.$configuration
             .sink { [weak self] _ in
-                DispatchQueue.main.async { [weak self] in
+                Task { @MainActor [weak self] in
                     self?.updatePreferredContentSize()
                 }
             }
@@ -178,14 +177,26 @@ private final class MenuBarAppearanceEditorHostingController: NSHostingControlle
 
     func updatePreferredContentSize() {
         guard let appState else {
-            preferredContentSize = NSSize(width: 500, height: 630)
+            preferredContentSize = NSSize(width: 525, height: 745)
             return
         }
         let configuration = appState.appearanceManager.configuration
-        let baseHeight: CGFloat = configuration.isDynamic ? 630 : 420
-        let shapeBonus: CGFloat = configuration.shapeKind == .noShape ? 0 : 175
+        let baseHeight: CGFloat = configuration.isDynamic ? 755 : 555
+        let shapeBonus: CGFloat = configuration.shapeKind == .noShape ? 0 : 105
         let headingBonus: CGFloat = 32
-        preferredContentSize = NSSize(width: 500, height: baseHeight + shapeBonus + headingBonus)
+        let tintOpacityBonus: CGFloat = {
+            guard configuration.shapeKind != .noShape, !configuration.isDynamic, configuration.current.tintKind != .noTint else { return 0 }
+            return 80
+        }()
+        let backgroundBonus: CGFloat = {
+            guard configuration.current.backgroundKind != .none else { return 0 }
+            var height: CGFloat = 45 // style picker + opacity + shadow
+            if configuration.current.backgroundHasBorder {
+                height += 80 // border color + width
+            }
+            return height
+        }()
+        preferredContentSize = NSSize(width: 525, height: baseHeight + shapeBonus + headingBonus + tintOpacityBonus + backgroundBonus)
         view.setFrameSize(preferredContentSize)
     }
 }

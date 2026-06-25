@@ -33,13 +33,9 @@ final class CustomTooltipPanel: NSPanel {
         return field
     }()
 
-    private let effectView: NSVisualEffectView = {
-        let view = NSVisualEffectView()
-        view.material = .toolTip
-        view.state = .active
-        view.isEmphasized = true
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 4
+    private let glassView: NSGlassEffectView = {
+        let view = NSGlassEffectView()
+        view.cornerRadius = 4
         view.translatesAutoresizingMaskIntoConstraints = false
         return view
     }()
@@ -63,20 +59,24 @@ final class CustomTooltipPanel: NSPanel {
         let contentView = NSView()
         contentView.translatesAutoresizingMaskIntoConstraints = false
 
-        effectView.addSubview(label)
-        contentView.addSubview(effectView)
+        let labelContainer = NSView()
+        labelContainer.translatesAutoresizingMaskIntoConstraints = false
+        labelContainer.addSubview(label)
+
+        glassView.contentView = labelContainer
+        contentView.addSubview(glassView)
         self.contentView = contentView
 
         NSLayoutConstraint.activate([
-            effectView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            effectView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            effectView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            effectView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            glassView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            glassView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            glassView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            glassView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
-            label.topAnchor.constraint(equalTo: effectView.topAnchor, constant: 2),
-            label.leadingAnchor.constraint(equalTo: effectView.leadingAnchor, constant: 6),
-            label.trailingAnchor.constraint(equalTo: effectView.trailingAnchor, constant: -6),
-            label.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -2),
+            label.topAnchor.constraint(equalTo: labelContainer.topAnchor, constant: 2),
+            label.leadingAnchor.constraint(equalTo: labelContainer.leadingAnchor, constant: 6),
+            label.trailingAnchor.constraint(equalTo: labelContainer.trailingAnchor, constant: -6),
+            label.bottomAnchor.constraint(equalTo: labelContainer.bottomAnchor, constant: -2),
         ])
     }
 
@@ -133,7 +133,7 @@ final class CustomTooltipPanel: NSPanel {
 ///
 /// Each `NSView` that wants custom-delayed tooltips should own an
 /// instance of this controller.
-final class CustomTooltipController {
+final class CustomTooltipController: @unchecked Sendable {
     private var timer: Timer?
     private weak var view: NSView?
 
@@ -149,29 +149,31 @@ final class CustomTooltipController {
     }
 
     deinit {
-        cancel()
+        timer?.invalidate()
     }
 
-    /// Schedules the tooltip to appear after `delay` seconds.
-    /// If `delay` is 0, the tooltip is shown immediately.
+    @MainActor
     func scheduleShow(delay: TimeInterval) {
         cancel()
         if delay <= 0 {
             showNow()
         } else {
             timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-                self?.showNow()
+                Task { @MainActor in
+                    self?.showNow()
+                }
             }
         }
     }
 
-    /// Hides the tooltip and cancels any pending show timer.
+    @MainActor
     func cancel() {
         timer?.invalidate()
         timer = nil
         CustomTooltipPanel.shared.dismiss(owner: id)
     }
 
+    @MainActor
     private func showNow() {
         guard let view, let window = view.window else { return }
 

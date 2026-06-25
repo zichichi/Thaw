@@ -40,7 +40,6 @@ extension AppSettings {
         general.showOnDoubleClick = Defaults.DefaultValue.showOnDoubleClick
         general.showOnHover = Defaults.DefaultValue.showOnHover
         general.showOnScroll = Defaults.DefaultValue.showOnScroll
-        general.itemSpacingOffset = Defaults.DefaultValue.itemSpacingOffset
         general.autoRehide = Defaults.DefaultValue.autoRehide
         general.rehideStrategy = Defaults.DefaultValue.rehideStrategy
         general.rehideInterval = Defaults.DefaultValue.rehideInterval
@@ -50,6 +49,7 @@ extension AppSettings {
     func resetAdvanced() {
         advanced.enableAlwaysHiddenSection = Defaults.DefaultValue.enableAlwaysHiddenSection
         advanced.showAllSectionsOnUserDrag = Defaults.DefaultValue.showAllSectionsOnUserDrag
+        appState?.itemManager.updateNewItemsPlacement(section: .hidden, arrangedViews: [])
         advanced.sectionDividerStyle = Defaults.DefaultValue.sectionDividerStyle
         advanced.hideApplicationMenus = Defaults.DefaultValue.hideApplicationMenus
         advanced.enableSecondaryContextMenu = Defaults.DefaultValue.enableSecondaryContextMenu
@@ -58,6 +58,12 @@ extension AppSettings {
         advanced.showMenuBarTooltips = Defaults.DefaultValue.showMenuBarTooltips
         advanced.iconRefreshInterval = Defaults.DefaultValue.iconRefreshInterval
         advanced.enableDiagnosticLogging = Defaults.DefaultValue.enableDiagnosticLogging
+        advanced.searchSectionOrder = AdvancedSettings.sanitizedSearchSectionOrder(
+            from: Defaults.DefaultValue.searchSectionOrder
+        )
+        advanced.searchIncludeVisible = Defaults.DefaultValue.searchIncludeVisible
+        advanced.searchIncludeHidden = Defaults.DefaultValue.searchIncludeHidden
+        advanced.searchIncludeAlwaysHidden = Defaults.DefaultValue.searchIncludeAlwaysHidden
     }
 
     /// Resets Hotkeys settings to their default values.
@@ -71,5 +77,6 @@ extension AppSettings {
     /// Resets Display settings to their default values.
     func resetDisplay() {
         displaySettings.configurations = Defaults.DefaultValue.displayIceBarConfigurations
+        displaySettings.globalConfiguration = Defaults.DefaultValue.globalDisplayConfiguration
     }
 }

@@ -15,17 +15,21 @@ enum SettingsNavigationIdentifier: String, NavigationIdentifier {
     case menuBarLayout = "Menu Bar Layout"
     case menuBarAppearance = "Menu Bar Appearance"
     case hotkeys = "Hotkeys"
+    case profiles = "Profiles"
     case advanced = "Advanced"
+    case automation = "Automation"
     case about = "About"
 
     var localized: LocalizedStringKey {
         switch self {
         case .general: "General"
         case .displays: "Displays"
-        case .menuBarLayout: "Menu Bar Layout"
-        case .menuBarAppearance: "Menu Bar Appearance"
+        case .menuBarLayout: "Layout"
+        case .menuBarAppearance: "Appearance"
         case .hotkeys: "Hotkeys"
+        case .profiles: "Profiles"
         case .advanced: "Advanced"
+        case .automation: "Automation"
         case .about: "About"
         }
     }
@@ -37,8 +41,10 @@ enum SettingsNavigationIdentifier: String, NavigationIdentifier {
         case .menuBarLayout: .systemSymbol("rectangle.topthird.inset.filled")
         case .menuBarAppearance: .systemSymbol("swatchpalette")
         case .hotkeys: .systemSymbol("keyboard")
+        case .profiles: .systemSymbol("person.crop.rectangle.stack")
         case .advanced: .systemSymbol("gearshape.2")
-        case .about: .assetCatalog(.iceCubeStroke)
+        case .automation: .systemSymbol("app.badge.checkmark")
+        case .about: .systemSymbol("cube")
         }
     }
 }

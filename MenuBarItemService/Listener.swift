@@ -6,10 +6,11 @@
 //  Copyright (Thaw) © 2026 Toni Förster
 //  Licensed under the GNU GPLv3
 
+import Foundation
 import XPC
 
 /// A wrapper around an XPC listener object.
-final class Listener {
+final class Listener: @unchecked Sendable {
     private let diagLog = DiagLog(category: "Listener")
     /// The shared listener.
     static let shared = Listener()
@@ -18,10 +19,12 @@ final class Listener {
     private let name = MenuBarItemService.name
 
     /// The underlying XPC listener object.
-    private var listener: XPCListener?
+    private var xpcListener: XPCListener?
 
     /// Creates the shared listener.
-    private init() {}
+    private init() {
+        // Intentionally empty: this type is a singleton and is configured via `activate()`.
+    }
 
     deinit {
         cancel()
@@ -35,11 +38,20 @@ final class Listener {
             case .start:
                 diagLog.debug("Listener received start request")
                 return .start
+            case let .configureLogging(filePath):
+                DiagnosticLogger.shared.attachToFile(at: URL(fileURLWithPath: filePath))
+                diagLog.debug("Listener attached diagnostic logging to \(filePath)")
+                return .configureLogging
             case let .sourcePID(window):
                 diagLog.debug("Listener: sourcePID request for windowID=\(window.windowID) title=\(window.title ?? "nil")")
                 let pid = SourcePIDCache.shared.pid(for: window)
                 diagLog.debug("Listener: sourcePID response for windowID=\(window.windowID) -> pid=\(pid.map { "\($0)" } ?? "nil")")
                 return .sourcePID(pid)
+            case let .sourcePIDs(windows):
+                diagLog.debug("Listener: sourcePIDs batch request for \(windows.count) windows")
+                let pids = SourcePIDCache.shared.pids(for: windows)
+                diagLog.debug("Listener: sourcePIDs batch response (\(pids.compactMap(\.self).count) resolved)")
+                return .sourcePIDs(pids)
             }
         } catch {
             diagLog.error("Listener failed to handle message with error \(error)")
@@ -50,27 +62,17 @@ final class Listener {
     /// Activates the listener without checking if it is already active,
     /// with the requirement that session peers must be signed with the
     /// same team identifier as the service process.
-    @available(macOS 26.0, *)
     private func uncheckedActivateWithSameTeamRequirement() throws {
-        listener = try XPCListener(service: name, requirement: .isFromSameTeam()) { [weak self] request in
-            request.accept { message in
-                self?.handleMessage(message)
-            }
-        }
-    }
-
-    /// Activates the listener without checking if it is already active.
-    private func uncheckedActivate() throws {
-        listener = try XPCListener(service: name) { [weak self] request in
-            request.accept { message in
-                self?.handleMessage(message)
+        xpcListener = try XPCListener(service: name, requirement: .isFromSameTeam()) { request in
+            request.accept { [self] message in
+                self.handleMessage(message)
             }
         }
     }
 
     /// Activates the listener.
     func activate() {
-        guard listener == nil else {
+        guard xpcListener == nil else {
             diagLog.notice("Listener is already active")
             return
         }
@@ -78,11 +80,7 @@ final class Listener {
         diagLog.debug("Activating listener")
 
         do {
-            if #available(macOS 26.0, *) {
-                try uncheckedActivateWithSameTeamRequirement()
-            } else {
-                try uncheckedActivate()
-            }
+            try uncheckedActivateWithSameTeamRequirement()
         } catch {
             diagLog.error("Failed to activate listener with error \(error)")
         }
@@ -91,6 +89,6 @@ final class Listener {
     /// Cancels the listener.
     func cancel() {
         diagLog.debug("Canceling listener")
-        listener.take()?.cancel()
+        xpcListener.take()?.cancel()
     }
 }

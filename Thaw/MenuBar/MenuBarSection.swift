@@ -6,13 +6,14 @@
 //  Copyright (Thaw) © 2026 Toni Förster
 //  Licensed under the GNU GPLv3
 
+import os
 import SwiftUI
 
 /// A representation of a section in a menu bar.
 @MainActor
 final class MenuBarSection {
     /// The name of a menu bar section.
-    enum Name: CaseIterable {
+    enum Name: String, CaseIterable, Codable {
         case visible
         case hidden
         case alwaysHidden
@@ -38,9 +39,9 @@ final class MenuBarSection {
         /// Localized string key representation.
         var localized: LocalizedStringKey {
             switch self {
-            case .visible: "Visible"
-            case .hidden: "Hidden"
-            case .alwaysHidden: "Always-Hidden"
+            case .visible: LocalizedStringKey("Visible")
+            case .hidden: LocalizedStringKey("Hidden")
+            case .alwaysHidden: LocalizedStringKey("Always-Hidden")
             }
         }
     }
@@ -64,7 +65,7 @@ final class MenuBarSection {
     /// The section's diagnostic logger.
     private nonisolated let diagLog = DiagLog(category: "MenuBarSection")
 
-    /// A Boolean value that indicates whether the Ice Bar should be used
+    /// A Boolean value that indicates whether the Thaw Bar should be used
     /// on the current active display.
     private var useIceBar: Bool {
         guard let appState else { return false }
@@ -73,12 +74,117 @@ final class MenuBarSection {
         return appState.settings.displaySettings.useIceBar(for: displayID)
     }
 
+    /// The gap that macOS leaves to the left and right of the notch (in points).
+    static nonisolated let notchGap: CGFloat = 24
+
+    /// The preferred way to present the section on the menu bar.
+    enum PresentationMode: Equatable {
+        /// Show the items inline without modifying the application menus.
+        case inline
+        /// Show the items inline, but only after hiding the application menus.
+        case inlineHidingApplicationMenus
+        /// Fall back to the Thaw Bar.
+        case iceBar
+    }
+
+    /// Calculates the usable inline width for menu bar items on a screen.
+    static nonisolated func usableInlineWidth(
+        from appMenuRightEdge: CGFloat?,
+        screenFrameMinX: CGFloat,
+        screenVisibleMaxX: CGFloat,
+        notchFrame: CGRect?
+    ) -> CGFloat {
+        let clampedAppMenuRightEdge = max(screenFrameMinX, appMenuRightEdge ?? screenFrameMinX)
+
+        if let notchFrame {
+            let usableLeftOfNotch = notchFrame.minX - notchGap
+            let usableRightOfNotchStart = notchFrame.maxX + notchGap
+            let leftWidth = max(0, usableLeftOfNotch - clampedAppMenuRightEdge)
+            let rightWidth = max(0, screenVisibleMaxX - usableRightOfNotchStart)
+            return leftWidth + rightWidth
+        }
+
+        return max(0, screenVisibleMaxX - clampedAppMenuRightEdge)
+    }
+
+    /// Decides whether inline presentation fits, optionally allowing the app
+    /// menus to be hidden to recover more space.
+    static nonisolated func presentationMode(
+        totalItemsWidth: CGFloat,
+        appMenuRightEdge: CGFloat?,
+        screenFrameMinX: CGFloat,
+        screenVisibleMaxX: CGFloat,
+        notchFrame: CGRect?,
+        allowHidingApplicationMenus: Bool
+    ) -> PresentationMode {
+        let inlineWidth = usableInlineWidth(
+            from: appMenuRightEdge,
+            screenFrameMinX: screenFrameMinX,
+            screenVisibleMaxX: screenVisibleMaxX,
+            notchFrame: notchFrame
+        )
+        if totalItemsWidth <= inlineWidth {
+            return .inline
+        }
+
+        guard allowHidingApplicationMenus else {
+            return .iceBar
+        }
+
+        let inlineWidthWithoutAppMenus = usableInlineWidth(
+            from: screenFrameMinX,
+            screenFrameMinX: screenFrameMinX,
+            screenVisibleMaxX: screenVisibleMaxX,
+            notchFrame: notchFrame
+        )
+        if totalItemsWidth <= inlineWidthWithoutAppMenus {
+            return .inlineHidingApplicationMenus
+        }
+
+        return .iceBar
+    }
+
+    /// Calculates the total width of the items that must be shown when the
+    /// section is expanded.
+    private func totalItemsWidthToShow() -> CGFloat {
+        guard let appState else { return 0 }
+
+        let hiddenItems = appState.itemManager.itemCache[Name.hidden]
+        let visibleItems = appState.itemManager.itemCache[Name.visible]
+        let hiddenWidth = hiddenItems.reduce(0) { acc, item in acc + item.bounds.width }
+        let visibleWidth = visibleItems.reduce(0) { acc, item in acc + item.bounds.width }
+
+        switch name {
+        case .visible, .hidden:
+            return hiddenWidth + visibleWidth
+        case .alwaysHidden:
+            let alwaysHiddenItems = appState.itemManager.itemCache[Name.alwaysHidden]
+            let alwaysHiddenWidth = alwaysHiddenItems.reduce(0) { acc, item in acc + item.bounds.width }
+            return alwaysHiddenWidth + hiddenWidth + visibleWidth
+        }
+    }
+
+    /// Chooses how the section should be presented on the given screen.
+    private func presentationMode(on screen: NSScreen) -> PresentationMode {
+        guard let appState else { return .iceBar }
+        let appMenuFrame = screen.getApplicationMenuFrame()
+
+        return Self.presentationMode(
+            totalItemsWidth: totalItemsWidthToShow(),
+            appMenuRightEdge: appMenuFrame?.maxX,
+            screenFrameMinX: screen.frame.minX,
+            screenVisibleMaxX: screen.visibleFrame.maxX,
+            notchFrame: screen.frameOfNotch,
+            allowHidingApplicationMenus: appState.settings.advanced.hideApplicationMenus
+        )
+    }
+
     /// A weak reference to the menu bar manager.
     private weak var menuBarManager: MenuBarManager? {
         appState?.menuBarManager
     }
 
-    /// The best screen to show the Ice Bar on.
+    /// The best screen to show the Thaw Bar on.
     ///
     /// Always returns the screen with the active menu bar so that
     /// clicking icons in the IceBar actually activates their popups.
@@ -185,8 +291,16 @@ final class MenuBarSection {
         }
 
         let displaySettings = appState.settings.displaySettings
-        let alwaysShow = displaySettings.alwaysShowHiddenItems(for: activeScreen.displayID)
         let useIceBar = displaySettings.useIceBar(for: activeScreen.displayID)
+
+        // only apply alwaysShowHiddenItems when mouse + active menu bar on same screen
+        let alwaysShow: Bool = if let menuBarScreen = NSScreen.screenWithActiveMenuBar,
+                                  menuBarScreen.displayID == NSScreen.screenWithMouse?.displayID
+        {
+            displaySettings.alwaysShowHiddenItems(for: menuBarScreen.displayID)
+        } else {
+            false
+        }
 
         if name == .hidden || name == .visible, alwaysShow, !useIceBar {
             controlItem.state = .showSection
@@ -204,12 +318,31 @@ final class MenuBarSection {
         menuBarManager.updateLastShowTimestamp()
 
         guard controlItem.isAddedToMenuBar else {
-            // The section is disabled.
-            // TODO: Can we use isEnabled for this check?
             return
         }
 
-        if useIceBar {
+        // Determine whether we should use the Thaw Bar based on settings.
+        let shouldUseIceBarBasedOnSettings = useIceBar
+
+        let preferredPresentationMode: PresentationMode
+        if shouldUseIceBarBasedOnSettings {
+            preferredPresentationMode = .iceBar
+        } else if let screen = screenForIceBar {
+            preferredPresentationMode = presentationMode(on: screen)
+            switch preferredPresentationMode {
+            case .inline:
+                break
+            case .inlineHidingApplicationMenus:
+                diagLog.info("Showing items inline by hiding the application menus")
+            case .iceBar:
+                diagLog.info("Not enough space to show items inline, falling back to Thaw Bar")
+            }
+        } else {
+            preferredPresentationMode = .inline
+        }
+
+        // Use Ice Thaw if settings say so OR if items still won't fit inline.
+        if preferredPresentationMode == .iceBar {
             // Make sure hidden and always-hidden control items are collapsed.
             // Still update the visible control item (Ice icon) state to show
             // its alternate icon.
@@ -244,9 +377,13 @@ final class MenuBarSection {
             return // We're done.
         }
 
-        // If we made it here, we're not using the Ice Bar.
+        // If we made it here, we're not using the Thaw Bar.
         // Make sure it's closed.
         menuBarManager.iceBarPanel.close()
+
+        if preferredPresentationMode == .inlineHidingApplicationMenus {
+            menuBarManager.hideApplicationMenus()
+        }
 
         switch name {
         case .visible, .hidden:
@@ -270,18 +407,12 @@ final class MenuBarSection {
             return
         }
 
-        menuBarManager.iceBarPanel.close() // Make sure Ice Bar is always closed.
+        menuBarManager.iceBarPanel.close() // Make sure Thaw Bar is always closed.
         menuBarManager.showOnHoverAllowed = true
 
-        switch name {
-        case _ where useIceBar, .visible, .hidden:
-            for section in menuBarManager.sections {
-                section.desiredState = .hideSection
-                section.updateControlItemState(for: nil)
-            }
-        case .alwaysHidden:
-            desiredState = .hideSection
-            updateControlItemState(for: nil)
+        for section in menuBarManager.sections {
+            section.desiredState = .hideSection
+            section.updateControlItemState(for: nil)
         }
 
         stopRehideChecks()
@@ -349,11 +480,11 @@ final class MenuBarSection {
             rehideMonitor = EventMonitor.universal(for: .mouseMoved) { [weak self, weak appState] event in
                 // Throttle: process at most ~20fps regardless of mouse polling rate.
                 enum Context {
-                    static var lastTime: TimeInterval = 0
+                    static let lastTime = OSAllocatedUnfairLock(initialState: TimeInterval(0))
                 }
                 let now = CACurrentMediaTime()
-                guard now - Context.lastTime > 0.05 else { return event }
-                Context.lastTime = now
+                guard now - Context.lastTime.withLock({ $0 }) > 0.05 else { return event }
+                Context.lastTime.withLock { $0 = now }
 
                 guard
                     let self,

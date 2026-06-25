@@ -8,9 +8,10 @@
 
 import Cocoa
 import Combine
+import os.lock
 
 /// Cache for menu bar item images.
-final class MenuBarItemImageCache: ObservableObject {
+final class MenuBarItemImageCache: ObservableObject, @unchecked Sendable {
     private static nonisolated let diagLog = DiagLog(category: "MenuBarItemImageCache")
     /// A representation of a captured menu bar item image.
     struct CapturedImage: Hashable {
@@ -84,7 +85,7 @@ final class MenuBarItemImageCache: ObservableObject {
         let lastFailureTime: Date
     }
 
-    private var failedCaptures: [MenuBarItemTag: FailedCapture] = [:]
+    private let failedCapturesLock = OSAllocatedUnfairLock<[MenuBarItemTag: FailedCapture]>(initialState: [:])
 
     /// Configuration for failed capture handling
     private static let maxFailuresBeforeBlacklist = 3
@@ -115,6 +116,11 @@ final class MenuBarItemImageCache: ObservableObject {
     /// The currently running live-refresh task, if any.
     private var liveRefreshTask: Task<Void, Never>?
 
+    /// Tracks whether the MenuBarLayoutSettingsPane has been opened at least once.
+    /// Used to gate background cache prewarming so captures only occur after the user
+    /// has accessed the layout settings.
+    @Published private(set) var settingsPaneHasBeenOpened = false
+
     deinit {
         memoryPressureSource?.cancel()
         currentUpdateTask?.cancel()
@@ -131,6 +137,27 @@ final class MenuBarItemImageCache: ObservableObject {
 
         // Try to load cached images from disk
         loadFromDisk()
+
+        // Only prewarm if a visible consumer exists at setup time.
+        // Background prewarming is gated by settingsPaneHasBeenOpened.
+        let hasVisible = hasVisibleCaptureConsumer()
+        guard hasVisible else {
+            return
+        }
+
+        // Keep a fresh layout snapshot ready so opening the layout settings
+        // pane does not need to capture every item from scratch.
+        currentUpdateTask?.cancel()
+        currentUpdateTask = Task { [weak self] in
+            await self?.refreshVisibleConsumersOrPrewarmLayoutCache()
+        }
+    }
+
+    /// Marks that the MenuBarLayoutSettingsPane has been opened.
+    /// Call this from the pane's onAppear or task modifier to enable background cache prewarming.
+    @MainActor
+    func markSettingsPaneOpened() {
+        settingsPaneHasBeenOpened = true
     }
 
     // MARK: Disk Persistence
@@ -162,7 +189,7 @@ final class MenuBarItemImageCache: ObservableObject {
 
                 let tagString = "\(tag.namespace):\(tag.title)"
                 return (tagString, pngData)
-            }.compactMap { $0 }
+            }.compactMap(\.self)
 
             guard cacheData.count == snapshot.count else { return }
 
@@ -294,9 +321,20 @@ final class MenuBarItemImageCache: ObservableObject {
                 guard let self else {
                     return
                 }
+                // Only trigger capture if a visible consumer exists or the settings pane
+                // has been opened at least once (itemCacheChangePublisher may indicate
+                // new items that the layout pane will need).
+                let nav = self.makeNavigationStateSnapshot()
+                let hasVisible = self.hasVisibleCaptureConsumer(nav: nav)
+                let settingsOpened = self.settingsPaneHasBeenOpened
+                guard hasVisible || settingsOpened else {
+                    return
+                }
                 self.currentUpdateTask?.cancel()
-                self.currentUpdateTask = Task {
-                    await self.updateCache()
+                self.currentUpdateTask = Task { [weak self, settingsOpened] in
+                    await self?.refreshVisibleConsumersOrPrewarmLayoutCache(
+                        allowBackgroundCapture: settingsOpened
+                    )
                 }
             }
             .store(in: &c)
@@ -333,37 +371,130 @@ final class MenuBarItemImageCache: ObservableObject {
 
     // MARK: Live Refresh
 
+    /// Snapshot of navigation state read in a single MainActor hop.
+    struct NavigationStateSnapshot {
+        let isIceBarPresented: Bool
+        let isSearchPresented: Bool
+        let isAppFrontmost: Bool
+        let isSettingsPresented: Bool
+        let settingsNavigationIdentifier: SettingsNavigationIdentifier?
+    }
+
+    /// Constructs a NavigationStateSnapshot from the current appState in a single MainActor hop.
+    /// Centralizes snapshot construction to avoid duplication across multiple call sites.
+    @MainActor
+    private func makeNavigationStateSnapshot() -> NavigationStateSnapshot {
+        guard let appState else {
+            return NavigationStateSnapshot(
+                isIceBarPresented: false,
+                isSearchPresented: false,
+                isAppFrontmost: false,
+                isSettingsPresented: false,
+                settingsNavigationIdentifier: nil
+            )
+        }
+        return NavigationStateSnapshot(
+            isIceBarPresented: appState.navigationState.isIceBarPresented,
+            isSearchPresented: appState.navigationState.isSearchPresented,
+            isAppFrontmost: appState.navigationState.isAppFrontmost,
+            isSettingsPresented: appState.navigationState.isSettingsPresented,
+            settingsNavigationIdentifier: appState.navigationState.settingsNavigationIdentifier
+        )
+    }
+
+    /// Refreshes the cache for currently visible consumers, or keeps a warm
+    /// background snapshot ready for the layout settings pane when no consumer
+    /// is visible.
+    private func refreshVisibleConsumersOrPrewarmLayoutCache(allowBackgroundCapture: Bool = false) async {
+        guard appState != nil else {
+            return
+        }
+
+        // Batch all navigation state reads into single MainActor hop
+        let nav = await MainActor.run {
+            makeNavigationStateSnapshot()
+        }
+
+        let hasVisibleConsumer = hasVisibleCaptureConsumer(nav: nav)
+
+        // Early-return unless a visible consumer exists or background capture is explicitly allowed.
+        // Background capture is gated by settingsPaneHasBeenOpened to avoid unnecessary full-screen
+        // captures when the user has never opened the layout settings pane.
+        guard hasVisibleConsumer || (allowBackgroundCapture && settingsPaneHasBeenOpened) else {
+            return
+        }
+
+        if hasVisibleConsumer {
+            await updateCache(nav: nav)
+        } else {
+            await updateCache(
+                sections: MenuBarSection.Name.allCases,
+                allowBackgroundCapture: true,
+                nav: nav
+            )
+        }
+    }
+
+    /// Returns whether any visible surface currently needs live item captures.
+    private func hasVisibleCaptureConsumer(nav: NavigationStateSnapshot) -> Bool {
+        if nav.isIceBarPresented || nav.isSearchPresented {
+            return true
+        }
+
+        return nav.isAppFrontmost && nav.isSettingsPresented && nav.settingsNavigationIdentifier == .menuBarLayout
+    }
+
+    /// Convenience overload that reads current state on MainActor when no snapshot is provided.
+    @MainActor
+    private func hasVisibleCaptureConsumer() -> Bool {
+        guard let appState else {
+            return false
+        }
+        let nav = NavigationStateSnapshot(
+            isIceBarPresented: appState.navigationState.isIceBarPresented,
+            isSearchPresented: appState.navigationState.isSearchPresented,
+            isAppFrontmost: appState.navigationState.isAppFrontmost,
+            isSettingsPresented: appState.navigationState.isSettingsPresented,
+            settingsNavigationIdentifier: appState.navigationState.settingsNavigationIdentifier
+        )
+        return hasVisibleCaptureConsumer(nav: nav)
+    }
+
     /// Starts or stops the live image refresh loop based on navigation state.
     @MainActor
     private func startLiveRefreshIfNeeded() {
-        guard let appState else {
+        guard appState != nil else {
             liveRefreshTask?.cancel()
             liveRefreshTask = nil
             return
         }
 
-        let nav = appState.navigationState
-        let needsRefresh = nav.isIceBarPresented
-            || nav.isSearchPresented
-            || (nav.isAppFrontmost && nav.isSettingsPresented
-                && nav.settingsNavigationIdentifier == .menuBarLayout)
+        // Compute visibility using centralized snapshot and helper to avoid duplication.
+        // Wrapping in Task since this is called from synchronous sink closures on main thread.
+        Task { [weak self] in
+            guard let self else { return }
+            let nav = await MainActor.run {
+                self.makeNavigationStateSnapshot()
+            }
+            let needsRefresh = self.hasVisibleCaptureConsumer(nav: nav)
 
-        if needsRefresh {
-            // Already running — don't restart
-            guard liveRefreshTask == nil else { return }
-            MenuBarItemImageCache.diagLog.debug(
-                "Starting live refresh (iceBar=\(nav.isIceBarPresented), search=\(nav.isSearchPresented), settings=\(nav.isSettingsPresented))"
-            )
-            liveRefreshTask = Task { [weak self, weak appState] in
-                guard let self, let appState else { return }
-                await self.runLiveRefreshLoop(appState: appState)
+            if needsRefresh {
+                // Already running — don't restart
+                guard self.liveRefreshTask == nil else { return }
+                MenuBarItemImageCache.diagLog.debug(
+                    "Starting live refresh (iceBar=\(nav.isIceBarPresented), search=\(nav.isSearchPresented), settings=\(nav.isSettingsPresented))"
+                )
+                self.liveRefreshTask = Task { [weak self] in
+                    guard let self else { return }
+                    await self.runLiveRefreshLoop()
+                }
+            } else {
+                if self.liveRefreshTask != nil {
+                    MenuBarItemImageCache.diagLog.debug("Stopping live refresh")
+                }
+                self.liveRefreshTask?.cancel()
+                self.liveRefreshTask = nil
             }
-        } else {
-            if liveRefreshTask != nil {
-                MenuBarItemImageCache.diagLog.debug("Stopping live refresh")
-            }
-            liveRefreshTask?.cancel()
-            liveRefreshTask = nil
         }
     }
 
@@ -373,12 +504,19 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Search, Layout Settings) instead of each view running its own loop.
     /// Heavy work (`refreshImages`) is `nonisolated` and runs off the main
     /// actor — only navigation state reads happen on `@MainActor`.
+    /// Uses `self.appState` (weak property) to avoid retain cycle via
+    /// the task's async stack frame.
     @MainActor
-    private func runLiveRefreshLoop(appState: AppState) async {
+    private func runLiveRefreshLoop() async {
         MenuBarItemImageCache.diagLog.debug("Live refresh loop started")
 
         while !Task.isCancelled {
+            guard let appState = self.appState else { break }
             let interval = appState.settings.advanced.iconRefreshInterval
+            guard interval > 0 else {
+                try? await Task.sleep(for: .seconds(1))
+                continue
+            }
             let ms = Int(interval * 1000)
             try? await Task.sleep(for: .milliseconds(ms))
             guard !Task.isCancelled else { break }
@@ -411,10 +549,39 @@ final class MenuBarItemImageCache: ObservableObject {
                 continue
             }
 
+            // Hoisted: these are tick-global, not per-section.
+            if appState.itemManager.lastMoveOperationOccurred(within: .seconds(2)) {
+                continue
+            }
+            if appState.itemManager.isResettingLayout {
+                continue
+            }
+
+            let scale = screen.backingScaleFactor
+
+            // Partition by capture path: visible items refresh via SCK
+            // (leak-free); hidden + always-hidden items refresh via SkyLight,
+            // batched into a single call per tick to amortize the irreducible
+            // per-call dictionary leak.
+            var offscreenBatch = [MenuBarItem]()
+            var offscreenSectionLabels = [String]()
+
             for section in sections {
                 let items = appState.itemManager.itemCache.managedItems(for: section)
                 guard !items.isEmpty else { continue }
-                await refreshImages(of: items, scale: screen.backingScaleFactor)
+
+                if section == .visible {
+                    MenuBarItemImageCache.diagLog.debug("liveRefresh (SCK): section=\(section.logString) displayID=\(screen.displayID) backingScaleFactor=\(Double(scale)) hasNotch=\(screen.hasNotch) items=\(items.count) menuBarHeight=\(Double(screen.getMenuBarHeightEstimate()))")
+                    await refreshImages(of: items, scale: scale, viaSCK: true)
+                } else {
+                    offscreenBatch.append(contentsOf: items)
+                    offscreenSectionLabels.append("\(section.logString)=\(items.count)")
+                }
+            }
+
+            if !offscreenBatch.isEmpty {
+                MenuBarItemImageCache.diagLog.debug("liveRefresh (SkyLight): batched \(offscreenBatch.count) offscreen items [\(offscreenSectionLabels.joined(separator: ", "))]")
+                await refreshImages(of: offscreenBatch, scale: scale)
             }
         }
 
@@ -434,7 +601,7 @@ final class MenuBarItemImageCache: ObservableObject {
     private nonisolated func compositeCapture(
         _ itemsWithBounds: [(item: MenuBarItem, bounds: CGRect)],
         scale: CGFloat
-    ) -> CaptureResult {
+    ) async -> CaptureResult {
         var result = CaptureResult()
 
         var windowIDs = [CGWindowID]()
@@ -453,7 +620,7 @@ final class MenuBarItemImageCache: ObservableObject {
             return result
         }
 
-        let compositeImage = ScreenCapture.captureWindows(
+        let compositeImage = await ScreenCapture.captureWindowsAsync(
             with: windowIDs,
             option: captureOption
         )
@@ -542,7 +709,7 @@ final class MenuBarItemImageCache: ObservableObject {
     private nonisolated func individualCapture(
         _ items: [MenuBarItem],
         scale: CGFloat
-    ) -> CaptureResult {
+    ) async -> CaptureResult {
         var result = CaptureResult()
         var capturedCount = 0
         var nilImageCount = 0
@@ -560,7 +727,7 @@ final class MenuBarItemImageCache: ObservableObject {
                 continue
             }
 
-            let image = ScreenCapture.captureWindow(
+            let image = await ScreenCapture.captureWindowAsync(
                 with: item.windowID,
                 option: captureOption
             )
@@ -611,15 +778,15 @@ final class MenuBarItemImageCache: ObservableObject {
             within: .seconds(2)
         ) {
             MenuBarItemImageCache.diagLog.debug("Capturing individually due to recent item movement")
-            return individualCapture(capturable, scale: scale)
+            return await individualCapture(capturable, scale: scale)
         }
 
         // Pre-filter off-screen items: hidden section items are positioned past
-        // the right edge of the screen. Including them in compositeCapture
+        // the left edge of the screen. Including them in compositeCapture
         // inflates boundsUnion → CGWindowListCreateImageFromArray returns an
         // image narrower than expected → width mismatch → the whole composite
-        // fails for ALL items. Off-screen items are captured by the live refresh
-        // loop (refreshImages) instead, so we can safely skip them here.
+        // fails for ALL items. Off-screen items are captured by the live
+        // refresh loop (refreshImages) instead, so we can safely skip them here.
         //
         // Note: isWindowOnScreen() cannot be used for this — macOS incorrectly
         // reports hidden menu bar items as on-screen (known macOS behaviour).
@@ -668,7 +835,7 @@ final class MenuBarItemImageCache: ObservableObject {
             return CaptureResult()
         }
 
-        let compositeResult = compositeCapture(onScreenItemsWithBounds, scale: scale)
+        let compositeResult = await compositeCapture(onScreenItemsWithBounds, scale: scale)
 
         if compositeResult.excluded.isEmpty {
             return compositeResult // All items captured successfully.
@@ -678,7 +845,7 @@ final class MenuBarItemImageCache: ObservableObject {
             "\(compositeResult.excluded.count)/\(onScreenItemsWithBounds.count) items excluded from composite, retrying individually"
         )
 
-        var individualResult = individualCapture(
+        var individualResult = await individualCapture(
             compositeResult.excluded,
             scale: scale
         )
@@ -700,7 +867,8 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Skips `@Published` updates when images haven't changed visually.
     nonisolated func refreshImages(
         of items: [MenuBarItem],
-        scale: CGFloat
+        scale: CGFloat,
+        viaSCK: Bool = false
     ) async {
         var windowIDs = [CGWindowID]()
         var storage = [CGWindowID: (MenuBarItem, CGRect)]()
@@ -720,10 +888,27 @@ final class MenuBarItemImageCache: ObservableObject {
             return
         }
 
-        guard let compositeImage = ScreenCapture.captureWindows(
-            with: windowIDs,
-            option: captureOption
-        ) else {
+        // Capture path: SCK is leak-free but display-bounded, so only use it
+        // when the caller knows all items are on-screen (visible section).
+        // SkyLight is required for items positioned past the display's left
+        // edge (hidden / always-hidden); both SCK filter shapes fail there
+        // (display+including → -3812, desktopIndependentWindow → -3811). Each
+        // SkyLight call leaks one CFMutableDictionary inside
+        // SLSWindowListCreateImageFromArrayProxying; that floor stays until
+        // Apple fixes SCK or the framework leak.
+        let compositeImage: CGImage?
+        if viaSCK {
+            compositeImage = await ScreenCapture.captureWindowsAsync(
+                with: windowIDs,
+                option: captureOption
+            )
+        } else {
+            compositeImage = ScreenCapture.captureWindows(
+                with: windowIDs,
+                option: captureOption
+            )
+        }
+        guard let compositeImage else {
             MenuBarItemImageCache.diagLog.debug("refreshImages: capture failed, skipping")
             return
         }
@@ -801,72 +986,70 @@ final class MenuBarItemImageCache: ObservableObject {
 
     /// Checks if an item should be skipped due to repeated capture failures.
     private func shouldSkipCapture(for item: MenuBarItem) -> Bool {
-        guard let failed = failedCaptures[item.tag] else {
-            return false
-        }
-
-        // If failed too many times and within cooldown period, skip
-        if failed.failureCount >= Self.maxFailuresBeforeBlacklist {
-            let timeSinceFailure = Date().timeIntervalSince(
-                failed.lastFailureTime
-            )
-            if timeSinceFailure < Self.blacklistCooldownSeconds {
-                return true
-            } else {
-                // Cooldown expired, reset failure count
-                failedCaptures.removeValue(forKey: item.tag)
+        failedCapturesLock.withLock { dict in
+            guard let failed = dict[item.tag] else {
                 return false
             }
-        }
 
-        return false
+            if failed.failureCount >= Self.maxFailuresBeforeBlacklist {
+                let timeSinceFailure = Date().timeIntervalSince(
+                    failed.lastFailureTime
+                )
+                if timeSinceFailure < Self.blacklistCooldownSeconds {
+                    return true
+                } else {
+                    dict.removeValue(forKey: item.tag)
+                    return false
+                }
+            }
+
+            return false
+        }
     }
 
     /// Records a capture failure for an item.
     private func recordCaptureFailure(for item: MenuBarItem) {
         let now = Date()
-        let existing = failedCaptures[item.tag]
+        failedCapturesLock.withLock { dict in
+            let existing = dict[item.tag]
 
-        if let existing = existing {
-            let newCount = existing.failureCount + 1
-            failedCaptures[item.tag] = FailedCapture(
-                tag: item.tag,
-                failureCount: newCount,
-                lastFailureTime: now
-            )
+            if let existing {
+                let newCount = existing.failureCount + 1
+                dict[item.tag] = FailedCapture(
+                    tag: item.tag,
+                    failureCount: newCount,
+                    lastFailureTime: now
+                )
 
-            // Log when an item reaches blacklist threshold
-            if newCount == Self.maxFailuresBeforeBlacklist {
-                MenuBarItemImageCache.diagLog.info(
-                    "Item blacklisted after \(newCount) failures: \(item.logString) (will retry after \(Self.blacklistCooldownSeconds)s cooldown)"
+                if newCount == Self.maxFailuresBeforeBlacklist {
+                    MenuBarItemImageCache.diagLog.info(
+                        "Item blacklisted after \(newCount) failures: \(item.logString) (will retry after \(Self.blacklistCooldownSeconds)s cooldown)"
+                    )
+                }
+            } else {
+                dict[item.tag] = FailedCapture(
+                    tag: item.tag,
+                    failureCount: 1,
+                    lastFailureTime: now
                 )
             }
-        } else {
-            failedCaptures[item.tag] = FailedCapture(
-                tag: item.tag,
-                failureCount: 1,
-                lastFailureTime: now
-            )
-        }
 
-        // Clean up old failed entries
-        cleanupOldFailedEntries()
+            let cutoff = now.addingTimeInterval(-Self.blacklistCooldownSeconds)
+            dict = dict.filter { _, failed in
+                failed.lastFailureTime > cutoff
+            }
+        }
     }
 
     /// Records a successful capture for an item (resets failure count).
     private func recordCaptureSuccess(for item: MenuBarItem) {
-        if let existing = failedCaptures.removeValue(forKey: item.tag), existing.failureCount >= 2 {
+        let recovered = failedCapturesLock.withLock { dict in
+            dict.removeValue(forKey: item.tag)
+        }
+        if let existing = recovered, existing.failureCount >= 2 {
             MenuBarItemImageCache.diagLog.info(
                 "Item recovered after \(existing.failureCount) previous failures: \(item.logString)"
             )
-        }
-    }
-
-    /// Cleans up old failed capture entries that have expired.
-    private func cleanupOldFailedEntries() {
-        let cutoff = Date().addingTimeInterval(-Self.blacklistCooldownSeconds)
-        failedCaptures = failedCaptures.filter { _, failed in
-            failed.lastFailureTime > cutoff
         }
     }
 
@@ -893,11 +1076,10 @@ final class MenuBarItemImageCache: ObservableObject {
         count: Int,
         excluding excludedTags: Set<MenuBarItemTag> = []
     ) -> [MenuBarItemTag] {
-        let candidates: [(tag: MenuBarItemTag, timestamp: UInt64)]
-        if excludedTags.isEmpty {
-            candidates = images.keys.map { ($0, accessTimestamps[$0] ?? 0) }
+        let candidates: [(tag: MenuBarItemTag, timestamp: UInt64)] = if excludedTags.isEmpty {
+            images.keys.map { ($0, accessTimestamps[$0] ?? 0) }
         } else {
-            candidates = images.keys
+            images.keys
                 .filter { !excludedTags.contains($0) }
                 .map { ($0, accessTimestamps[$0] ?? 0) }
         }
@@ -970,12 +1152,12 @@ final class MenuBarItemImageCache: ObservableObject {
             let isValid = if tag.isSystemItem {
                 allValidTags.contains(tag)
             } else {
-                allValidTags.contains(where: { $0.matchesIgnoringWindowID(tag) })
+                containsTagMatchingIgnoringWindowID(allValidTags, target: tag)
             }
             let isPreserved = if tag.isSystemItem {
                 preservedTags.contains(tag)
             } else {
-                preservedTags.contains(where: { $0.matchesIgnoringWindowID(tag) })
+                containsTagMatchingIgnoringWindowID(preservedTags, target: tag)
             }
             return !isValid && !isPreserved
         }
@@ -1000,8 +1182,11 @@ final class MenuBarItemImageCache: ObservableObject {
     @MainActor
     func performCacheCleanup() {
         let removedCount = validateAndCleanupInvalidEntries()
-        let failedCleared = failedCaptures.count
-        failedCaptures.removeAll()
+        let failedCleared = failedCapturesLock.withLock { dict in
+            let count = dict.count
+            dict.removeAll()
+            return count
+        }
         MenuBarItemImageCache.diagLog.info(
             "Manual cache cleanup completed: removed \(removedCount) invalid entries, cleared \(failedCleared) failed captures"
         )
@@ -1014,10 +1199,9 @@ final class MenuBarItemImageCache: ObservableObject {
         let lruSize = accessTimestamps.count
         let maxSize = Self.maxCacheSize
         let usagePercent = (imageSize * 100) / maxSize
-        let failedCount = failedCaptures.count
-        let blacklistedCount = failedCaptures.values.filter {
-            $0.failureCount >= Self.maxFailuresBeforeBlacklist
-        }.count
+        let (failedCount, blacklistedCount) = failedCapturesLock.withLock { dict in
+            (dict.count, dict.values.count(where: { $0.failureCount >= Self.maxFailuresBeforeBlacklist }))
+        }
 
         let lruSorted = accessTimestamps.sorted { $0.value < $1.value }
         let lruDescription = lruSorted.map { "\($0.key)" }.joined(separator: ", ")
@@ -1039,19 +1223,20 @@ final class MenuBarItemImageCache: ObservableObject {
 
     /// Updates the cache for the given sections, without checking whether
     /// caching is necessary.
+    @MainActor
     func updateCacheWithoutChecks(sections: [MenuBarSection.Name]) async {
         guard let appState else {
             MenuBarItemImageCache.diagLog.warning("updateCacheWithoutChecks: appState is nil, aborting")
             return
         }
 
-        let hasScreenRecording = await appState.hasPermission(.screenRecording)
+        let hasScreenRecording = appState.hasPermission(.screenRecording)
         guard hasScreenRecording else {
             MenuBarItemImageCache.diagLog.debug("updateCacheWithoutChecks: no screen recording permission, aborting")
             return
         }
 
-        guard let displayID = await appState.itemManager.itemCache.displayID else {
+        guard let displayID = appState.itemManager.itemCache.displayID else {
             MenuBarItemImageCache.diagLog.warning("updateCacheWithoutChecks: itemCache.displayID is nil, aborting")
             return
         }
@@ -1064,6 +1249,7 @@ final class MenuBarItemImageCache: ObservableObject {
         }
 
         let scale = screen.backingScaleFactor
+        MenuBarItemImageCache.diagLog.notice("updateCacheWithoutChecks: displayID=\(screen.displayID) backingScaleFactor=\(Double(scale)) hasNotch=\(screen.hasNotch) menuBarHeight=\(Double(screen.getMenuBarHeightEstimate())) sections=\(sections.map(\.logString))")
         var newImages = [MenuBarItemTag: CapturedImage]()
 
         for section in sections {
@@ -1072,7 +1258,7 @@ final class MenuBarItemImageCache: ObservableObject {
                 return
             }
 
-            guard await !appState.itemManager.itemCache[section].isEmpty else {
+            guard !appState.itemManager.itemCache[section].isEmpty else {
                 continue
             }
 
@@ -1101,7 +1287,7 @@ final class MenuBarItemImageCache: ObservableObject {
         }
 
         // Get the set of valid item tags from all sections to clean up stale entries
-        let allValidTags = await Set(
+        let allValidTags = Set(
             appState.itemManager.itemCache.managedItems.map(\.tag)
         )
 
@@ -1113,7 +1299,7 @@ final class MenuBarItemImageCache: ObservableObject {
             // menu bar item whose window briefly disappeared). This prevents
             // the IceBar and search from showing empty icons while the item's
             // app is still running.
-            let recentlyFailedTags = Set(failedCaptures.keys)
+            let recentlyFailedTags = failedCapturesLock.withLock { Set($0.keys) }
 
             // Remove images for items that no longer exist in the item cache,
             // but preserve images for items that have recent capture failures
@@ -1124,8 +1310,8 @@ final class MenuBarItemImageCache: ObservableObject {
                 if key.isSystemItem {
                     return allValidTags.contains(key) || recentlyFailedTags.contains(key)
                 }
-                return allValidTags.contains(where: { $0.matchesIgnoringWindowID(key) }) ||
-                    recentlyFailedTags.contains(where: { $0.matchesIgnoringWindowID(key) })
+                return containsTagMatchingIgnoringWindowID(allValidTags, target: key) ||
+                    containsTagMatchingIgnoringWindowID(recentlyFailedTags, target: key)
             }
 
             // Additional cleanup: Remove entries with invalid window information,
@@ -1138,14 +1324,31 @@ final class MenuBarItemImageCache: ObservableObject {
                 accessTimestamps[tag] = accessCounter
             }
 
+            // Remove old entries whose (namespace, title, instanceIndex) matches a
+            // new entry but with a different windowID. After a monitor reconnect,
+            // items may get new windowIDs, causing duplicate cache entries for the
+            // same logical item. Keep only the latest capture (newImages wins).
+            let newKeysSet = Set(newImages.keys)
+            let staleKeys = images.keys.filter { oldKey in
+                guard !oldKey.isSystemItem, !newKeysSet.contains(oldKey) else {
+                    return false
+                }
+                return containsTagMatchingIgnoringWindowID(newKeysSet, target: oldKey)
+            }
+            for tag in staleKeys {
+                images.removeValue(forKey: tag)
+                accessTimestamps.removeValue(forKey: tag)
+            }
+
             // Merge in the new images
             images.merge(newImages) { _, new in new }
 
             // Enforce cache size limit using LRU eviction, but never evict
-            // items that belong to the sections we just captured (i.e. the
-            // sections currently being displayed).
+            // items that still exist in the menu bar (valid item tags).
+            // This prevents thrashing the cache for visible items when
+            // many transient items come and go (e.g. monitor hotplug).
             if images.count > Self.maxCacheSize {
-                let protectedTags = Set(newImages.keys)
+                let protectedTags = allValidTags
                 let excessCount = images.count - Self.maxCacheSize
                 let tagsToRemove = leastRecentlyUsedTags(
                     count: excessCount,
@@ -1187,22 +1390,41 @@ final class MenuBarItemImageCache: ObservableObject {
         }
     }
 
+    private func containsTagMatchingIgnoringWindowID(
+        _ tags: Set<MenuBarItemTag>,
+        target: MenuBarItemTag
+    ) -> Bool {
+        for tag in tags where tag.matchesIgnoringWindowID(target) {
+            return true
+        }
+        return false
+    }
+
     /// Updates the cache for the given sections, if necessary.
-    func updateCache(sections: [MenuBarSection.Name], skipRecentMoveCheck: Bool = false) async {
+    func updateCache(
+        sections: [MenuBarSection.Name],
+        skipRecentMoveCheck: Bool = false,
+        allowBackgroundCapture: Bool = false,
+        nav: NavigationStateSnapshot? = nil
+    ) async {
         guard let appState else {
             MenuBarItemImageCache.diagLog.debug("updateCache: appState is nil, skipping")
             return
         }
 
-        let isIceBarPresented = await appState.navigationState.isIceBarPresented
-        let isSearchPresented = await appState.navigationState.isSearchPresented
+        // Use provided snapshot or construct one in a single MainActor hop
+        let navSnapshot: NavigationStateSnapshot = if let nav {
+            nav
+        } else {
+            await MainActor.run {
+                makeNavigationStateSnapshot()
+            }
+        }
 
-        if !isIceBarPresented, !isSearchPresented {
-            let isAppFrontmost = await appState.navigationState.isAppFrontmost
-            let isSettingsPresented = await appState.navigationState.isSettingsPresented
-            let settingsNavID = await appState.navigationState.settingsNavigationIdentifier
+        if !allowBackgroundCapture {
+            let hasVisibleConsumer = hasVisibleCaptureConsumer(nav: navSnapshot)
 
-            guard isAppFrontmost, isSettingsPresented, settingsNavID == .menuBarLayout else {
+            guard hasVisibleConsumer else {
                 // This is the normal path when IceBar/search/settings are not visible — not an error
                 return
             }
@@ -1229,26 +1451,31 @@ final class MenuBarItemImageCache: ObservableObject {
             }
         }
 
-        MenuBarItemImageCache.diagLog.debug("updateCache: proceeding with cache update for \(sections.count) sections (iceBar=\(isIceBarPresented), search=\(isSearchPresented))")
+        MenuBarItemImageCache.diagLog.debug("updateCache: proceeding with cache update for \(sections.count) sections (iceBar=\(navSnapshot.isIceBarPresented), search=\(navSnapshot.isSearchPresented), background=\(allowBackgroundCapture))")
         await updateCacheWithoutChecks(sections: sections)
     }
 
     /// Updates the cache for all sections, if necessary.
-    func updateCache() async {
+    @MainActor
+    func updateCache(nav: NavigationStateSnapshot? = nil) async {
         guard let appState else {
             return
         }
 
-        let isIceBarPresented = await appState.navigationState.isIceBarPresented
-        let isSearchPresented = await appState.navigationState.isSearchPresented
-        let isSettingsPresented = await appState.navigationState
-            .isSettingsPresented
+        // Use provided snapshot or construct one in a single MainActor hop
+        let navSnapshot: NavigationStateSnapshot = if let nav {
+            nav
+        } else {
+            await MainActor.run {
+                makeNavigationStateSnapshot()
+            }
+        }
 
         var sectionsNeedingDisplay = [MenuBarSection.Name]()
 
-        if isSettingsPresented || isSearchPresented {
+        if navSnapshot.isSettingsPresented || navSnapshot.isSearchPresented {
             sectionsNeedingDisplay = MenuBarSection.Name.allCases
-        } else if isIceBarPresented, let section = await appState.menuBarManager.iceBarPanel
+        } else if navSnapshot.isIceBarPresented, let section = appState.menuBarManager.iceBarPanel
             .currentSection
         {
             sectionsNeedingDisplay.append(section)
@@ -1256,7 +1483,8 @@ final class MenuBarItemImageCache: ObservableObject {
 
         await updateCache(
             sections: sectionsNeedingDisplay,
-            skipRecentMoveCheck: isIceBarPresented
+            skipRecentMoveCheck: navSnapshot.isIceBarPresented,
+            nav: navSnapshot
         )
     }
 
@@ -1279,7 +1507,7 @@ final class MenuBarItemImageCache: ObservableObject {
         images.removeAll()
         accessTimestamps.removeAll()
         accessCounter = 0
-        failedCaptures.removeAll()
+        failedCapturesLock.withLock { $0.removeAll() }
     }
 
     // MARK: Cache Failed

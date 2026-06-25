@@ -377,6 +377,8 @@ final class ControlItem {
         case .hidden, .alwaysHidden:
             switch state {
             case .showSection:
+                button.isEnabled = true
+                button.alphaValue = 1
                 switch appState.settings.advanced.sectionDividerStyle {
                 case .noDivider:
                     updateStatusItemVisibility(false)
@@ -399,6 +401,10 @@ final class ControlItem {
                 updateStatusItemVisibility(true)
                 button.appearsDisabled = true
                 button.isHighlighted = false
+                // Match the spacer item pattern: invisible and non-interactive.
+                // The constraint stays active so items are pushed off-screen.
+                button.isEnabled = false
+                button.alphaValue = 0
             }
         }
     }
@@ -485,7 +491,7 @@ final class ControlItem {
 
     /// Calculates how many spacer items are needed to push hidden items off ultra-wide displays.
     private func requiredSpacerCount() -> Int {
-        let maxScreenWidth = NSScreen.screens.map { $0.frame.width }.max() ?? 6000
+        let maxScreenWidth = NSScreen.screens.map(\.frame.width).max() ?? 6000
         guard maxScreenWidth > 5120 else { return 0 }
 
         let desiredWidth = maxScreenWidth * 3
@@ -544,20 +550,36 @@ final class ControlItem {
     /// Performs the control item's action.
     @objc private func performAction() {
         guard
-            let menuBarManager = appState?.menuBarManager,
+            let appState,
             let event = NSApp.currentEvent
         else {
+            return
+        }
+        let menuBarManager = appState.menuBarManager
+
+        // Suppress phantom clicks delivered to the status item button while
+        // no menu bar items are rendered on-screen for the active space. This
+        // catches fast top-of-screen clicks during the menu bar reveal
+        // sequence under a fullscreen app, which would otherwise expand the
+        // hidden section offscreen. NSApp.currentSystemPresentationOptions is
+        // per-app and does not reflect another app's fullscreen state, so the
+        // items-list signal is used directly.
+        let screenForCheck = window?.screen ?? NSScreen.main
+        if let screen = screenForCheck, !screen.isSystemMenuBarVisible() {
             return
         }
 
         switch event.type {
         case .leftMouseDown:
-            let modifierFlags = NSEvent.modifierFlags
+            // Capture modifier flags from the event to ensure we have the state
+            // at the time of the click, not when the Task executes.
+            let modifierFlags = event.modifierFlags
 
             // Running this from a Task seems to improve the visual
             // responsiveness of the status item's button.
-            Task {
+            Task { [appState] in
                 if
+                    appState.settings.advanced.useDoubleClickToShowAlwaysHiddenSection,
                     event.clickCount > 1,
                     identifier == .visible,
                     let alwaysHidden = menuBarManager.section(withName: .alwaysHidden),
@@ -567,17 +589,20 @@ final class ControlItem {
                     return
                 }
 
-                if modifierFlags == .control {
+                if modifierFlags.contains(.control) {
                     showMenu()
                     return
                 }
 
-                if
-                    modifierFlags == .option,
-                    let section = menuBarManager.section(withName: .alwaysHidden),
-                    section.isEnabled
-                {
-                    section.toggle()
+                if modifierFlags.contains(.option) {
+                    // Option-click: only toggle always-hidden if enabled.
+                    if
+                        appState.settings.advanced.useOptionClickToShowAlwaysHiddenSection,
+                        let section = menuBarManager.section(withName: .alwaysHidden),
+                        section.isEnabled
+                    {
+                        section.toggle()
+                    }
                     return
                 }
 
@@ -677,6 +702,38 @@ final class ControlItem {
             menu.addItem(item)
         }
 
+        // Profiles submenu.
+        let profileManager = appState.profileManager
+        if !profileManager.profiles.isEmpty {
+            menu.addItem(.separator())
+
+            let profilesItem = NSMenuItem(
+                title: String(localized: "Profiles"),
+                action: nil,
+                keyEquivalent: ""
+            )
+            profilesItem.image = NSImage(
+                systemSymbolName: "person.crop.rectangle.stack",
+                accessibilityDescription: "Profiles"
+            )
+            let profilesMenu = NSMenu()
+            for meta in profileManager.profiles {
+                let item = NSMenuItem(
+                    title: meta.name,
+                    action: #selector(applyProfileFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = meta.id
+                if meta.id == profileManager.activeProfileID {
+                    item.state = .on
+                }
+                profilesMenu.addItem(item)
+            }
+            profilesItem.submenu = profilesMenu
+            menu.addItem(profilesItem)
+        }
+
         menu.addItem(.separator())
 
         let checkForUpdatesItem = NSMenuItem(
@@ -687,6 +744,15 @@ final class ControlItem {
         checkForUpdatesItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Check for Updates")
         checkForUpdatesItem.target = self
         menu.addItem(checkForUpdatesItem)
+
+        let supportItem = NSMenuItem(
+            title: String(localized: "Support \(Constants.displayName)…"),
+            action: #selector(openDonateURL),
+            keyEquivalent: ""
+        )
+        supportItem.image = NSImage(systemSymbolName: "heart.circle.fill", accessibilityDescription: "Support")
+        supportItem.target = self
+        menu.addItem(supportItem)
 
         menu.addItem(.separator())
 
@@ -699,7 +765,22 @@ final class ControlItem {
         quitItem.image = NSImage(systemSymbolName: "power", accessibilityDescription: "Quit")
         menu.addItem(quitItem)
 
+        let restartItem = NSMenuItem(
+            title: String(localized: "Restart \(Constants.displayName)"),
+            action: #selector(restartFromMenu),
+            keyEquivalent: "q"
+        )
+        restartItem.keyEquivalentModifierMask = [.command, .option]
+        restartItem.isAlternate = true
+        restartItem.target = self
+        restartItem.image = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: "Restart")
+        menu.addItem(restartItem)
+
         return menu
+    }
+
+    @objc private func restartFromMenu() {
+        appState?.restartSelf()
     }
 
     /// Shows the control item's menu.
@@ -724,12 +805,34 @@ final class ControlItem {
         appState?.menuBarManager.searchPanel.show()
     }
 
+    /// Applies the profile selected from the context menu.
+    @objc private func applyProfileFromMenu(_ menuItem: NSMenuItem) {
+        guard
+            let profileID = menuItem.representedObject as? UUID,
+            let appState,
+            appState.profileManager.layoutTask == nil,
+            profileID != appState.profileManager.activeProfileID
+        else { return }
+        let profileManager = appState.profileManager
+        Task {
+            guard let profile = try? profileManager.loadProfile(id: profileID) else { return }
+            let previousID = profileManager.activeProfileID
+            profileManager.activeProfileID = profileID
+            profileManager.applyProfile(profile, to: appState, previousProfileID: previousID)
+        }
+    }
+
     /// Opens the settings window and checks for app updates.
     @objc private func checkForUpdates() {
         guard let appState else {
             return
         }
         appState.updatesManager.checkForUpdates()
+    }
+
+    /// Opens the donate URL.
+    @objc private func openDonateURL() {
+        NSWorkspace.shared.open(Constants.donateURL)
     }
 }
 
@@ -763,7 +866,7 @@ enum ControlItemDefaults {
 
     /// Migrates the given control item defaults key from an old
     /// autosave name to a new autosave name.
-    static func migrate<Value>(key: Key<Value>, from oldAutosaveName: String, to newAutosaveName: String) {
+    static func migrate(key: Key<some Any>, from oldAutosaveName: String, to newAutosaveName: String) {
         guard newAutosaveName != oldAutosaveName else {
             return
         }
@@ -809,10 +912,7 @@ enum ControlItemDefaults {
         if ControlItemDefaults[.visible, autosaveName] == nil {
             ControlItemDefaults[.visible, autosaveName] = true
         }
-        if
-            #available(macOS 26.0, *),
-            ControlItemDefaults[.visibleCC, autosaveName] == nil
-        {
+        if ControlItemDefaults[.visibleCC, autosaveName] == nil {
             ControlItemDefaults[.visibleCC, autosaveName] = true
         }
     }

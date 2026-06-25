@@ -19,17 +19,15 @@ struct AboutSettingsPane: View {
     }
 
     private var contributeURL: URL {
-        // swiftlint:disable:next force_unwrapping
-        URL(string: "https://github.com/stonerl/Thaw")!
+        Constants.repositoryURL
     }
 
     private var issuesURL: URL {
-        contributeURL.appendingPathComponent("issues")
+        Constants.issuesURL
     }
 
     private var donateURL: URL {
-        // swiftlint:disable:next force_unwrapping
-        URL(string: "https://github.com/sponsors/stonerl")!
+        Constants.donateURL
     }
 
     private var lastUpdateCheckString: String {
@@ -41,37 +39,25 @@ struct AboutSettingsPane: View {
     }
 
     var body: some View {
-        if #available(macOS 26.0, *) {
-            contentForm(cornerStyle: .continuous)
-        } else {
-            contentForm(cornerStyle: .circular)
+        contentForm()
+    }
+
+    private func contentForm() -> some View {
+        IceForm {
+            mainContent()
+            Spacer()
+            bottomBar()
         }
     }
 
-    private func contentForm(cornerStyle: RoundedCornerStyle) -> some View {
-        IceForm(spacing: 0) {
-            mainContent(containerShape: RoundedRectangle(cornerRadius: 20, style: cornerStyle))
-            Spacer(minLength: 10)
-            bottomBar(containerShape: Capsule(style: cornerStyle))
+    private func mainContent() -> some View {
+        IceSection(options: [.isBordered]) {
+            VStack(spacing: 24) {
+                appIconAndCopyrightSection
+                updatesSection
+            }
+            .padding(.vertical, 8) // Uses your new 8pt standard for height
         }
-    }
-
-    private func mainContent(containerShape: some InsettableShape) -> some View {
-        IceSection(spacing: 0, options: .plain) {
-            appIconAndCopyrightSection
-                .layoutPriority(1)
-
-            Spacer(minLength: 0)
-                .frame(maxHeight: 20)
-
-            updatesSection
-                .layoutPriority(1)
-        }
-        .padding(.top, 5)
-        .padding([.horizontal, .bottom], 30)
-        .frame(maxHeight: 500)
-        .background(.quinary, in: containerShape)
-        .containerShape(containerShape)
     }
 
     private var appIconAndCopyrightSection: some View {
@@ -85,17 +71,33 @@ struct AboutSettingsPane: View {
                 }
 
                 VStack(alignment: .leading) {
-                    Text("\(Constants.displayName)")
+                    Text(verbatim: "\(Constants.displayName)")
                         .font(.system(size: 80))
                         .foregroundStyle(.primary)
 
-                    Text("Version \(Constants.versionString) (\(Constants.buildString))")
-                        .font(.system(size: 15))
+                    HStack(spacing: 6) {
+                        let versionText = LocalizedStringResource("Version \(Constants.versionString) (\(Constants.buildString))")
+
+                        Text(versionText)
+                            .font(.system(size: 15))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+
+                        Button {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(String(localized: versionText), forType: .string)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
+                        .help("Copy version info")
+                    }
 
                     Text(Constants.copyrightString)
                         .font(.system(size: 14))
-                        .foregroundStyle(.secondary.opacity(0.67))
+                        .foregroundStyle(.secondary)
                 }
                 .fontWeight(.medium)
             }
@@ -153,56 +155,33 @@ struct AboutSettingsPane: View {
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
-                .opacity(updatesManager.lastUpdateCheckDate == nil ? 0.5 : 1.0)
+                .opacity(updatesManager.lastUpdateCheckDate == nil ? 0.75 : 1.0)
         }
     }
 
-    private func bottomBar(containerShape: some InsettableShape) -> some View {
-        HStack {
-            Button("Quit \(Constants.displayName)") {
-                NSApp.terminate(nil)
+    private func bottomBar() -> some View {
+        IceSection(options: [.isBordered]) {
+            HStack(spacing: 0) {
+                Button("Quit \(Constants.displayName)") {
+                    NSApp.terminate(nil)
+                }
+                .foregroundStyle(.red)
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                HStack(spacing: 20) {
+                    Button("Acknowledgements") { NSWorkspace.shared.open(acknowledgementsURL) }
+                    Button("Contribute") { openURL(contributeURL) }
+                    Button("Report a Bug") { openURL(issuesURL) }
+                    Button("Support \(Constants.displayName)", systemImage: "heart.circle.fill") {
+                        openURL(donateURL)
+                    }
+                }
+                .buttonStyle(.plain)
             }
-            Spacer()
-            Button("Acknowledgements") {
-                NSWorkspace.shared.open(acknowledgementsURL)
-            }
-            Button("Contribute") {
-                openURL(contributeURL)
-            }
-            Button("Report a Bug") {
-                openURL(issuesURL)
-            }
-            Button("Support \(Constants.displayName)", systemImage: "heart.circle.fill") {
-                openURL(donateURL)
-            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
         }
-        .padding(8)
-        .buttonStyle(BottomBarButtonStyle())
-        .background(.quinary, in: containerShape)
-        .containerShape(containerShape)
-        .frame(height: 40)
-    }
-}
-
-private struct BottomBarButtonStyle: ButtonStyle {
-    @State private var isHovering = false
-
-    private var borderShape: some InsettableShape {
-        ContainerRelativeShape()
-    }
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background {
-                borderShape
-                    .fill(configuration.isPressed ? .tertiary : .quaternary)
-                    .opacity(isHovering ? 1 : 0)
-            }
-            .contentShape([.focusEffect, .interaction], borderShape)
-            .onHover { hovering in
-                isHovering = hovering
-            }
     }
 }
